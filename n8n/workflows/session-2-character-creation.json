@@ -312,8 +312,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        368,
-        208
+        320,
+        304
       ]
     },
     {
@@ -346,7 +346,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Aggregate all character results into final response\nconst allItems = $input.all();\nconst executionId = $('variable').first().json.execution_id;\n$('When Executed by Another Workflow').first().json.output\nconst characters = allItems.map(item => ({\n  name: item.json.character_name,\n  description: item.json.character_data?.description || '',\n  personality: item.json.character_data?.personality || '',\n  costume: item.json.character_data?.costume || '',\n  image_url: item.json.s3_url || null,\n  provider: item.json.provider || 'none',\n  generated_at: new Date().toISOString()\n}));\n\nconst successful = characters.filter(c => c.image_url !== null).length;\nconst failed = characters.filter(c => c.image_url === null).length;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    characters: characters,\n    total_characters: characters.length,\n    generation_stats: {\n      successful: successful,\n      failed: failed\n    }\n  }\n}];"
+        "jsCode": "// Aggregate all character results into final response\nconst allItems = $input.all();\n\nconst characters = allItems.map(item => ({\n  name: item.json.character_name,\n  description: item.json.character_data?.description || '',\n  personality: item.json.character_data?.personality || '',\n  costume: item.json.character_data?.costume || '',\n  image_url: item.json.s3_url || null,\n  provider: item.json.provider || 'none',\n  generated_at: new Date().toISOString()\n}));\n\nconst successful = characters.filter(c => c.image_url !== null).length;\nconst failed = characters.filter(c => c.image_url === null).length;\n\nreturn [{\n  json: {\n    characters: characters,\n    total_characters: characters.length,\n    generation_stats: {\n      successful: successful,\n      failed: failed\n    }\n  }\n}];"
       },
       "id": "88c9e2e0-32a2-4f52-b892-f8131684adf6",
       "name": "Aggregate Results",
@@ -404,8 +404,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -1840,
-        -112
+        -2096,
+        -96
       ],
       "disabled": true
     },
@@ -847,7 +847,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "d94d7189-c7b2-4c5c-91da-6e08045ef77d",
+  "versionId": "1896208b-c1e8-4357-9dc1-33bd98d0190e",
   "meta": {
     "instanceId": "0b008bd86df5902c8c20987844e8ef7a6cf9a5639f4abd7f8a22764455c02c65"
   },
