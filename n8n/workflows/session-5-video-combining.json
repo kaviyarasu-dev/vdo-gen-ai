@@ -1,0 +1,632 @@
+{
+  "name": "Session 5 - Video Combining",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-combining",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "video-combining-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract and store variables for use throughout the workflow\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    execution_id: item.execution_id,\n    callback_url: item.callback_url || null,\n    scene_videos: item.scene_videos,\n    transition_type: item.config?.transition_type || 'crossfade',\n    transition_duration: item.config?.transition_duration || 0.5,\n    output_format: item.config?.output_format || 'mp4',\n    output_resolution: item.config?.output_resolution || '1080p',\n    audio_normalize: item.config?.audio_normalize !== false,\n    temp_dir: `/tmp/n8n/${item.execution_id}`,\n    s3_output_path: `${item.execution_id}/final/output.${item.config?.output_format || 'mp4'}`\n  }\n}];"
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Sort scene videos by order and compute totals\nconst vars = $input.first().json;\nconst videos = vars.scene_videos;\n\nconst sorted = [...videos].sort((a, b) => a.order - b.order);\n\nreturn [{\n  json: {\n    sorted_videos: sorted,\n    total_videos: sorted.length,\n    total_duration: sorted.reduce((acc, v) => acc + v.duration_seconds, 0)\n  }\n}];"
+      },
+      "id": "sort-videos",
+      "name": "Sort Videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "command": "=mkdir -p {{ $('Set Variables').first().json.temp_dir }}"
+      },
+      "id": "create-temp-dir",
+      "name": "Create Temp Directory",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Download all scene videos to temp directory with retry logic\nconst videos = $('Sort Videos').first().json.sorted_videos;\nconst tempDir = $('Set Variables').first().json.temp_dir;\nconst downloadedPaths = [];\n\nfor (let i = 0; i < videos.length; i++) {\n  const video = videos[i];\n  const localPath = `${tempDir}/scene_${String(video.scene_id).padStart(2, '0')}.mp4`;\n\n  let downloaded = false;\n  let lastError = null;\n\n  // Retry up to 3 times per video\n  for (let attempt = 0; attempt < 3; attempt++) {\n    try {\n      if (attempt > 0) {\n        await new Promise(resolve => setTimeout(resolve, 2000 * Math.pow(2, attempt)));\n      }\n\n      const response = await this.helpers.httpRequest({\n        method: 'GET',\n        url: video.video_url,\n        encoding: 'arraybuffer',\n        timeout: 120000\n      });\n\n      const fs = require('fs');\n      fs.writeFileSync(localPath, Buffer.from(response));\n\n      downloaded = true;\n      break;\n    } catch (err) {\n      lastError = err;\n    }\n  }\n\n  if (!downloaded) {\n    throw new Error(`Failed to download scene ${video.scene_id} after 3 attempts: ${lastError?.message || 'Unknown error'}`);\n  }\n\n  downloadedPaths.push({\n    scene_id: video.scene_id,\n    local_path: localPath,\n    duration: video.duration_seconds\n  });\n}\n\nreturn [{\n  json: {\n    downloaded_videos: downloadedPaths,\n    temp_dir: tempDir\n  }\n}];",
+        "options": {
+          "timeout": 620000
+        }
+      },
+      "id": "download-all-videos",
+      "name": "Download All Videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-download-error",
+              "leftValue": "={{ $json.error !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-download-error",
+      "name": "IF Download Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-transition-type",
+              "leftValue": "={{ $('Set Variables').first().json.transition_type }}",
+              "rightValue": "none",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "switch-transition-type",
+      "name": "Is Simple Concat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Generate concat.txt file for FFmpeg simple concatenation\nconst videos = $('Download All Videos').first().json.downloaded_videos;\nconst tempDir = $('Download All Videos').first().json.temp_dir;\nconst concatFilePath = `${tempDir}/concat.txt`;\nconst audioNormalize = $('Set Variables').first().json.audio_normalize;\n\nconst concatContent = videos\n  .map(v => `file '${v.local_path}'`)\n  .join('\\n');\n\nconst fs = require('fs');\nfs.writeFileSync(concatFilePath, concatContent);\n\nreturn [{\n  json: {\n    concat_file: concatFilePath,\n    video_count: videos.length\n  }\n}];"
+      },
+      "id": "generate-concat-file",
+      "name": "Generate Concat File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "command": "=ffmpeg -y -f concat -safe 0 -i {{ $json.concat_file }} -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k {{ $('Set Variables').first().json.audio_normalize ? '-af loudnorm' : '' }} {{ $('Set Variables').first().json.temp_dir }}/output.mp4"
+      },
+      "id": "ffmpeg-basic-concat",
+      "name": "FFmpeg Basic Concat",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2010, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build and execute FFmpeg crossfade/fade transition command\nconst videos = $('Download All Videos').first().json.downloaded_videos;\nconst tempDir = $('Set Variables').first().json.temp_dir;\nconst transitionDuration = $('Set Variables').first().json.transition_duration;\nconst transitionType = $('Set Variables').first().json.transition_type;\nconst audioNormalize = $('Set Variables').first().json.audio_normalize;\nconst outputPath = `${tempDir}/output.mp4`;\n\n// Map transition_type to FFmpeg xfade transition name\nconst transitionMap = {\n  'crossfade': 'fade',\n  'fade': 'fade',\n  'wipe': 'wipeleft',\n  'slide': 'slideright'\n};\nconst xfadeTransition = transitionMap[transitionType] || 'fade';\n\nif (videos.length === 1) {\n  // Single video - just copy it\n  const fs = require('fs');\n  fs.copyFileSync(videos[0].local_path, outputPath);\n  const stats = fs.statSync(outputPath);\n  return [{\n    json: {\n      output_path: outputPath,\n      file_size: stats.size,\n      transition_type: transitionType\n    }\n  }];\n}\n\n// Build complex filter for xfade transitions\nlet filterComplex = '';\n\nfor (let i = 1; i < videos.length; i++) {\n  const prevOutput = i === 1 ? '[0:v]' : `[v${i-1}]`;\n  const currentInput = `[${i}:v]`;\n  const outputLabel = i === videos.length - 1 ? '[vout]' : `[v${i}]`;\n  const offset = videos.slice(0, i).reduce((acc, v) => acc + v.duration - transitionDuration, 0);\n\n  filterComplex += `${prevOutput}${currentInput}xfade=transition=${xfadeTransition}:duration=${transitionDuration}:offset=${offset}${outputLabel};`;\n}\n\n// Audio concat\nconst audioInputs = videos.map((_, i) => `[${i}:a]`).join('');\nfilterComplex += `${audioInputs}concat=n=${videos.length}:v=0:a=1[aout]`;\n\n// Build input arguments\nconst inputs = videos.map(v => `-i \"${v.local_path}\"`).join(' ');\n\n// Add audio normalization filter if enabled\nconst audioFilter = audioNormalize ? ' -af loudnorm' : '';\n\nconst ffmpegCommand = `ffmpeg -y ${inputs} -filter_complex \"${filterComplex}\" -map \"[vout]\" -map \"[aout]\" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k${audioFilter} \"${outputPath}\"`;\n\nconst { execSync } = require('child_process');\ntry {\n  execSync(ffmpegCommand, { maxBuffer: 50 * 1024 * 1024 });\n} catch (error) {\n  throw new Error(`FFmpeg crossfade failed: ${error.message}`);\n}\n\nconst fs = require('fs');\nconst stats = fs.statSync(outputPath);\n\nreturn [{\n  json: {\n    output_path: outputPath,\n    file_size: stats.size,\n    transition_type: transitionType\n  }\n}];",
+        "options": {
+          "timeout": 620000
+        }
+      },
+      "id": "ffmpeg-crossfade",
+      "name": "FFmpeg Crossfade Transitions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Merge output from either concat path (basic or crossfade)\nconst item = $input.first().json;\n\n// From basic concat path, output_path is in temp_dir\nconst tempDir = $('Set Variables').first().json.temp_dir;\nlet outputPath = item.output_path || `${tempDir}/output.mp4`;\nlet fileSize = item.file_size || 0;\n\n// If we came from basic concat, get file size\nif (!fileSize) {\n  try {\n    const fs = require('fs');\n    const stats = fs.statSync(outputPath);\n    fileSize = stats.size;\n  } catch (e) {\n    // File stats failed, continue without size\n  }\n}\n\nreturn [{\n  json: {\n    output_path: outputPath,\n    file_size: fileSize\n  }\n}];"
+      },
+      "id": "merge-ffmpeg-output",
+      "name": "Merge FFmpeg Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-ffmpeg-error",
+              "leftValue": "={{ $json.error !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-ffmpeg-error",
+      "name": "IF FFmpeg Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2450, 400]
+    },
+    {
+      "parameters": {
+        "command": "=ffmpeg -y -i {{ $json.output_path }} -vf \"scale={{ $('Set Variables').first().json.output_resolution === '4k' ? '3840:2160' : ($('Set Variables').first().json.output_resolution === '1080p' ? '1920:1080' : '1280:720') }}\" -c:v libx264 -preset medium -crf 23 -c:a copy {{ $('Set Variables').first().json.temp_dir }}/output_scaled.mp4"
+      },
+      "id": "resolution-scaling",
+      "name": "Resolution Scaling",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2670, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Determine final output path (scaled or original)\nconst tempDir = $('Set Variables').first().json.temp_dir;\nconst fs = require('fs');\n\nconst scaledPath = `${tempDir}/output_scaled.mp4`;\nconst originalPath = `${tempDir}/output.mp4`;\n\nlet outputPath;\nlet fileSize;\n\ntry {\n  const stats = fs.statSync(scaledPath);\n  outputPath = scaledPath;\n  fileSize = stats.size;\n} catch (e) {\n  // Scaled file doesn't exist, use original\n  const stats = fs.statSync(originalPath);\n  outputPath = originalPath;\n  fileSize = stats.size;\n}\n\nreturn [{\n  json: {\n    output_path: outputPath,\n    file_size: fileSize\n  }\n}];"
+      },
+      "id": "resolve-output-path",
+      "name": "Resolve Output Path",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2890, 500]
+    },
+    {
+      "parameters": {
+        "command": "=ffprobe -v quiet -print_format json -show_format -show_streams {{ $json.output_path }}"
+      },
+      "id": "get-video-metadata",
+      "name": "Get Video Metadata",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3110, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse ffprobe output into structured metadata\nconst item = $input.first().json;\nlet ffprobeOutput;\n\ntry {\n  ffprobeOutput = JSON.parse(item.stdout);\n} catch (e) {\n  // If ffprobe output parsing fails, return defaults\n  return [{\n    json: {\n      output_path: $('Resolve Output Path').first().json.output_path,\n      total_duration: $('Sort Videos').first().json.total_duration,\n      file_size_bytes: $('Resolve Output Path').first().json.file_size,\n      bitrate: 0,\n      video_codec: 'h264',\n      resolution: '1920x1080',\n      fps: 24\n    }\n  }];\n}\n\nconst format = ffprobeOutput.format || {};\nconst videoStream = (ffprobeOutput.streams || []).find(s => s.codec_type === 'video');\n\n// Parse frame rate safely (e.g., \"24/1\" -> 24)\nlet fps = 24;\nif (videoStream?.r_frame_rate) {\n  const parts = videoStream.r_frame_rate.split('/');\n  fps = parts.length === 2 ? Math.round(parseInt(parts[0]) / parseInt(parts[1])) : parseInt(parts[0]);\n}\n\nreturn [{\n  json: {\n    output_path: $('Resolve Output Path').first().json.output_path,\n    total_duration: parseFloat(format.duration) || $('Sort Videos').first().json.total_duration,\n    file_size_bytes: parseInt(format.size) || $('Resolve Output Path').first().json.file_size,\n    bitrate: parseInt(format.bit_rate) || 0,\n    video_codec: videoStream?.codec_name || 'h264',\n    resolution: videoStream ? `${videoStream.width}x${videoStream.height}` : '1920x1080',\n    fps: fps\n  }\n}];"
+      },
+      "id": "parse-metadata",
+      "name": "Parse Video Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3330, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Upload the final combined video to S3 with retry logic\nconst fs = require('fs');\n\nconst vars = $('Set Variables').first().json;\nconst outputPath = $input.first().json.output_path;\nconst s3Bucket = $env.S3_BUCKET || 'vdo-gen';\nconst s3Region = $env.S3_REGION || 'us-east-1';\nconst s3Key = vars.s3_output_path;\n\nconst videoBuffer = fs.readFileSync(outputPath);\nconst s3Url = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/${s3Key}`;\n\nlet uploaded = false;\nlet lastError = null;\n\n// Retry up to 3 times with exponential backoff\nfor (let attempt = 0; attempt < 3; attempt++) {\n  try {\n    if (attempt > 0) {\n      await new Promise(resolve => setTimeout(resolve, 2000 * Math.pow(2, attempt)));\n    }\n\n    await this.helpers.httpRequest({\n      method: 'PUT',\n      url: s3Url,\n      headers: {\n        'Content-Type': `video/${vars.output_format}`,\n        'x-amz-acl': 'public-read',\n        'x-amz-meta-execution-id': vars.execution_id,\n        'x-amz-meta-scene-count': String($('Sort Videos').first().json.total_videos),\n        'x-amz-meta-transition-type': vars.transition_type\n      },\n      body: videoBuffer,\n      encoding: 'arraybuffer',\n      timeout: 300000\n    });\n\n    uploaded = true;\n    break;\n  } catch (err) {\n    lastError = err;\n  }\n}\n\nif (!uploaded) {\n  throw new Error(`S3 upload failed after 3 attempts: ${lastError?.message || 'Unknown error'}`);\n}\n\nreturn [{\n  json: {\n    s3_url: s3Url,\n    file_size: videoBuffer.length\n  }\n}];",
+        "options": {
+          "timeout": 320000
+        }
+      },
+      "id": "upload-to-s3",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3550, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-upload-error",
+              "leftValue": "={{ $json.error !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-upload-error",
+      "name": "IF Upload Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3770, 500]
+    },
+    {
+      "parameters": {
+        "command": "=rm -rf {{ $('Set Variables').first().json.temp_dir }}"
+      },
+      "id": "cleanup-temp-files",
+      "name": "Cleanup Temp Files",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3990, 600],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  execution_id: $('Set Variables').first().json.execution_id,\n  data: {\n    final_video_url: $('Upload to S3').first().json.s3_url,\n    total_duration: $('Parse Video Metadata').first().json.total_duration,\n    file_size_bytes: $('Parse Video Metadata').first().json.file_size_bytes,\n    scene_count: $('Sort Videos').first().json.total_videos,\n    video_specs: {\n      resolution: $('Parse Video Metadata').first().json.resolution,\n      codec: $('Parse Video Metadata').first().json.video_codec,\n      fps: $('Parse Video Metadata').first().json.fps,\n      bitrate: $('Parse Video Metadata').first().json.bitrate\n    },\n    processing: {\n      transition_type: $('Set Variables').first().json.transition_type,\n      transition_duration: $('Set Variables').first().json.transition_duration,\n      audio_normalized: $('Set Variables').first().json.audio_normalize\n    },\n    completed_at: new Date().toISOString()\n  }\n}) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [4210, 600]
+    },
+    {
+      "parameters": {
+        "command": "=rm -rf {{ $('Set Variables').first().json.temp_dir }}"
+      },
+      "id": "cleanup-on-error",
+      "name": "Cleanup on Error",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3990, 200],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: false,\n  execution_id: $('Set Variables').first().json.execution_id,\n  error: {\n    message: 'Video combining failed',\n    details: $json.error || $json.message || 'Processing error occurred',\n    stage: $json.error ? 'processing' : 'unknown'\n  }\n}) }}",
+        "options": {
+          "responseCode": 500,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-error",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [4210, 200]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Sort Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sort Videos": {
+      "main": [
+        [
+          {
+            "node": "Create Temp Directory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Temp Directory": {
+      "main": [
+        [
+          {
+            "node": "Download All Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download All Videos": {
+      "main": [
+        [
+          {
+            "node": "IF Download Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Download Error": {
+      "main": [
+        [
+          {
+            "node": "Cleanup on Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Simple Concat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Simple Concat?": {
+      "main": [
+        [
+          {
+            "node": "Generate Concat File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FFmpeg Crossfade Transitions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Concat File": {
+      "main": [
+        [
+          {
+            "node": "FFmpeg Basic Concat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFmpeg Basic Concat": {
+      "main": [
+        [
+          {
+            "node": "Merge FFmpeg Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFmpeg Crossfade Transitions": {
+      "main": [
+        [
+          {
+            "node": "Merge FFmpeg Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge FFmpeg Output": {
+      "main": [
+        [
+          {
+            "node": "IF FFmpeg Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF FFmpeg Error": {
+      "main": [
+        [
+          {
+            "node": "Cleanup on Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolution Scaling",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolution Scaling": {
+      "main": [
+        [
+          {
+            "node": "Resolve Output Path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Output Path": {
+      "main": [
+        [
+          {
+            "node": "Get Video Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Video Metadata": {
+      "main": [
+        [
+          {
+            "node": "Parse Video Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Video Metadata": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to S3": {
+      "main": [
+        [
+          {
+            "node": "IF Upload Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Upload Error": {
+      "main": [
+        [
+          {
+            "node": "Cleanup on Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cleanup Temp Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Temp Files": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup on Error": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "vdo-gen",
+      "id": "vdo-gen"
+    },
+    {
+      "name": "session-5",
+      "id": "session-5"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-13T00:00:00.000Z",
+  "versionId": "1"
+}

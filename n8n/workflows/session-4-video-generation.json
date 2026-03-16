@@ -1,0 +1,736 @@
+{
+  "name": "Session 4 - Video Generation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-generation",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "video-generation-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract and store variables for use throughout the workflow\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    execution_id: item.execution_id,\n    callback_url: item.callback_url || null,\n    scene: item.scene,\n    scene_id: String(item.scene.id).padStart(2, '0'),\n    video_model: item.config?.video_model || 'kling-2.6',\n    motion_strength: item.config?.motion_strength || 'medium',\n    fps: item.config?.fps || 24,\n    s3_path: `${item.execution_id}/videos/scene_${String(item.scene.id).padStart(2, '0')}.mp4`\n  }\n}];"
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build the motion prompt from scene data and frame context\nconst scene = $input.first().json.scene;\nconst motionStrength = $('Set Variables').first().json.motion_strength;\n\nconst motionPrompt = [\n  'Smooth camera motion from start to end position.',\n  `Scene: ${scene.description}`,\n  `Motion intensity: ${motionStrength}`,\n  `Camera movement: ${scene.frame_descriptions?.start_frame?.composition || 'static to dynamic'}`,\n  'Maintain character consistency throughout.',\n  'Cinematic quality, professional video production.'\n].join('\\n').trim();\n\nreturn [{\n  json: {\n    motion_prompt: motionPrompt,\n    start_frame_url: scene.start_frame_url,\n    end_frame_url: scene.end_frame_url,\n    duration: scene.duration_seconds\n  }\n}];"
+      },
+      "id": "build-video-prompt",
+      "name": "Build Video Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.wavespeed.ai/api/v3/{{ $('Set Variables').first().json.video_model }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  prompt: $json.motion_prompt,\n  image_url: $json.start_frame_url,\n  end_image_url: $json.end_frame_url,\n  duration: $json.duration,\n  fps: $('Set Variables').first().json.fps,\n  motion_bucket_id: $('Set Variables').first().json.motion_strength === 'high' ? 255 : ($('Set Variables').first().json.motion_strength === 'low' ? 50 : 127),\n  seed: -1,\n  cfg_scale: 7\n}) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "wavespeed-create-video",
+      "name": "Wavespeed AI - Create Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "wavespeed-api",
+          "name": "Wavespeed API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-wavespeed-create-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-wavespeed-create-error",
+      "name": "IF Wavespeed Create Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Poll Wavespeed AI for video generation completion\nconst item = $input.first().json;\nconst predictionId = item.body?.id || item.id;\n\nif (!predictionId) {\n  throw new Error('No prediction ID returned from Wavespeed AI');\n}\n\nconst maxAttempts = 20; // 20 * 30s = 10 minutes max\nconst delayMs = 30000; // 30 seconds\n\nfor (let attempt = 0; attempt < maxAttempts; attempt++) {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://api.wavespeed.ai/api/v3/predictions/${predictionId}`,\n    headers: {\n      'Authorization': `Bearer ${$credentials.wavespeedApiKey}`\n    }\n  });\n\n  if (response.status === 'succeeded') {\n    const videoUrl = response.output?.video_url || response.output;\n    if (!videoUrl) {\n      throw new Error('Wavespeed succeeded but returned no video URL');\n    }\n    return [{\n      json: {\n        success: true,\n        video_url: videoUrl,\n        prediction_id: predictionId,\n        provider: 'wavespeed',\n        processing_time: attempt * 30\n      }\n    }];\n  }\n\n  if (response.status === 'failed') {\n    throw new Error(`Wavespeed video generation failed: ${response.error || 'Unknown error'}`);\n  }\n\n  // Status is still 'processing' or 'starting' - keep polling\n  await new Promise(resolve => setTimeout(resolve, delayMs));\n}\n\nthrow new Error('Wavespeed video generation timeout after 10 minutes');",
+        "options": {
+          "timeout": 620000
+        }
+      },
+      "id": "wavespeed-poll",
+      "name": "Wavespeed AI - Poll Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "wavespeed-api",
+          "name": "Wavespeed API"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-wavespeed-poll-error",
+              "leftValue": "={{ $json.error !== undefined || $json.success !== true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-wavespeed-poll-error",
+      "name": "IF Wavespeed Poll Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.runwayml.com/v1/image_to_video",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Runway-Version",
+              "value": "2024-09-13"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  promptImage: $('Build Video Prompt').first().json.start_frame_url,\n  promptText: $('Build Video Prompt').first().json.motion_prompt,\n  model: 'gen3a_turbo',\n  duration: Math.min($('Build Video Prompt').first().json.duration, 10),\n  ratio: '16:9',\n  seed: -1\n}) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "runway-fallback",
+      "name": "Runway Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 200],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "runway-api",
+          "name": "Runway API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-runway-create-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-runway-create-error",
+      "name": "IF Runway Create Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2010, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Poll Runway API for video generation completion\nconst item = $input.first().json;\nconst taskId = item.body?.id || item.id;\n\nif (!taskId) {\n  throw new Error('No task ID returned from Runway API');\n}\n\nconst maxAttempts = 40; // Runway can take longer\nconst delayMs = 15000; // 15 seconds\n\nfor (let attempt = 0; attempt < maxAttempts; attempt++) {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://api.runwayml.com/v1/tasks/${taskId}`,\n    headers: {\n      'Authorization': `Bearer ${$credentials.runwayApiKey}`\n    }\n  });\n\n  if (response.status === 'SUCCEEDED') {\n    const videoUrl = response.output?.[0];\n    if (!videoUrl) {\n      throw new Error('Runway succeeded but returned no video URL');\n    }\n    return [{\n      json: {\n        success: true,\n        video_url: videoUrl,\n        task_id: taskId,\n        provider: 'runway',\n        processing_time: attempt * 15\n      }\n    }];\n  }\n\n  if (response.status === 'FAILED') {\n    throw new Error(`Runway video generation failed: ${response.failure || 'Unknown error'}`);\n  }\n\n  // Still processing - keep polling\n  await new Promise(resolve => setTimeout(resolve, delayMs));\n}\n\nthrow new Error('Runway video generation timeout after 10 minutes');",
+        "options": {
+          "timeout": 620000
+        }
+      },
+      "id": "runway-poll",
+      "name": "Runway - Poll Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "runway-api",
+          "name": "Runway API"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-runway-poll-error",
+              "leftValue": "={{ $json.error !== undefined || $json.success !== true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-runway-poll-error",
+      "name": "IF Runway Poll Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.klingai.com/v1/videos/image2video",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model_name: 'kling-v1-6',\n  image: $('Build Video Prompt').first().json.start_frame_url,\n  prompt: $('Build Video Prompt').first().json.motion_prompt,\n  negative_prompt: 'blurry, distorted, low quality',\n  cfg_scale: 0.5,\n  mode: 'std',\n  duration: '5'\n}) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "kling-fallback",
+      "name": "Kling Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 200],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kling-api",
+          "name": "Kling API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kling-create-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-kling-create-error",
+      "name": "IF Kling Create Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2890, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Poll Kling API for video generation completion\nconst item = $input.first().json;\nconst taskId = item.body?.data?.task_id || item.data?.task_id || item.body?.task_id;\n\nif (!taskId) {\n  throw new Error('No task ID returned from Kling API');\n}\n\nconst maxAttempts = 30;\nconst delayMs = 20000; // 20 seconds\n\nfor (let attempt = 0; attempt < maxAttempts; attempt++) {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://api.klingai.com/v1/videos/image2video/${taskId}`,\n    headers: {\n      'Authorization': `Bearer ${$credentials.klingApiKey}`\n    }\n  });\n\n  const taskStatus = response.data?.task_status || response.task_status;\n\n  if (taskStatus === 'succeed') {\n    const videoUrl = response.data?.task_result?.videos?.[0]?.url ||\n                     response.task_result?.videos?.[0]?.url;\n    if (!videoUrl) {\n      throw new Error('Kling succeeded but returned no video URL');\n    }\n    return [{\n      json: {\n        success: true,\n        video_url: videoUrl,\n        task_id: taskId,\n        provider: 'kling',\n        processing_time: attempt * 20\n      }\n    }];\n  }\n\n  if (taskStatus === 'failed') {\n    throw new Error(`Kling video generation failed: ${response.data?.task_status_msg || 'Unknown error'}`);\n  }\n\n  // Still processing - keep polling\n  await new Promise(resolve => setTimeout(resolve, delayMs));\n}\n\nthrow new Error('Kling video generation timeout after 10 minutes');",
+        "options": {
+          "timeout": 620000
+        }
+      },
+      "id": "kling-poll",
+      "name": "Kling - Poll Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3110, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kling-api",
+          "name": "Kling API"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kling-poll-error",
+              "leftValue": "={{ $json.error !== undefined || $json.success !== true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-kling-poll-error",
+      "name": "IF Kling Poll Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3330, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Download the generated video as binary data\nconst item = $input.first().json;\nconst videoUrl = item.video_url;\n\nif (!videoUrl) {\n  throw new Error('No video URL provided for download');\n}\n\nconst videoBuffer = await this.helpers.httpRequest({\n  method: 'GET',\n  url: videoUrl,\n  encoding: 'arraybuffer',\n  timeout: 120000 // 2 minute timeout for large videos\n});\n\nreturn [{\n  json: {\n    video_data: Buffer.from(videoBuffer).toString('base64'),\n    video_size: videoBuffer.length,\n    source_url: videoUrl,\n    provider: item.provider\n  }\n}];",
+        "options": {
+          "timeout": 130000
+        }
+      },
+      "id": "download-video",
+      "name": "Download Video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3550, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Upload the generated video to S3\nconst item = $input.first().json;\nconst vars = $('Set Variables').first().json;\nconst s3Bucket = $env.S3_BUCKET || 'vdo-gen';\nconst s3Region = $env.S3_REGION || 'us-east-1';\nconst s3Key = vars.s3_path;\n\nif (!item.video_data) {\n  throw new Error('No video data available for upload');\n}\n\nconst videoBuffer = Buffer.from(item.video_data, 'base64');\nconst s3Url = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/${s3Key}`;\n\n// Attempt upload with retry logic (3 retries with exponential backoff)\nlet uploaded = false;\nlet lastError = null;\n\nfor (let attempt = 0; attempt < 3; attempt++) {\n  try {\n    if (attempt > 0) {\n      await new Promise(resolve => setTimeout(resolve, 2000 * Math.pow(2, attempt)));\n    }\n\n    await this.helpers.httpRequest({\n      method: 'PUT',\n      url: s3Url,\n      headers: {\n        'Content-Type': 'video/mp4',\n        'x-amz-acl': 'public-read'\n      },\n      body: videoBuffer,\n      encoding: 'arraybuffer',\n      timeout: 300000 // 5 minutes for upload\n    });\n\n    uploaded = true;\n    break;\n  } catch (err) {\n    lastError = err;\n  }\n}\n\nif (!uploaded) {\n  throw new Error(`S3 upload failed after 3 attempts: ${lastError?.message || 'Unknown error'}`);\n}\n\nreturn [{\n  json: {\n    scene_id: vars.scene.id,\n    scene_title: vars.scene.title,\n    video_url: s3Url,\n    duration_seconds: vars.scene.duration_seconds,\n    file_size_bytes: item.video_size,\n    provider: item.provider,\n    generated_at: new Date().toISOString()\n  }\n}];",
+        "options": {
+          "timeout": 320000
+        }
+      },
+      "id": "upload-to-s3",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3770, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  execution_id: $('Set Variables').first().json.execution_id,\n  data: {\n    scene_id: $json.scene_id,\n    scene_title: $json.scene_title,\n    video_url: $json.video_url,\n    duration_seconds: $json.duration_seconds,\n    file_size_bytes: $json.file_size_bytes,\n    provider: $json.provider,\n    generated_at: $json.generated_at\n  }\n}) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3990, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: false,\n  execution_id: $('Set Variables').first().json.execution_id,\n  error: {\n    scene_id: $('Set Variables').first().json.scene.id,\n    message: 'Video generation failed after all fallback attempts',\n    details: $json.error || $json.message || 'All providers exhausted',\n    attempted_providers: ['wavespeed', 'runway', 'kling']\n  }\n}) }}",
+        "options": {
+          "responseCode": 500,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-error",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3550, 100]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Build Video Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Video Prompt": {
+      "main": [
+        [
+          {
+            "node": "Wavespeed AI - Create Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wavespeed AI - Create Video": {
+      "main": [
+        [
+          {
+            "node": "IF Wavespeed Create Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Wavespeed Create Error": {
+      "main": [
+        [
+          {
+            "node": "Runway Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wavespeed AI - Poll Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wavespeed AI - Poll Completion": {
+      "main": [
+        [
+          {
+            "node": "IF Wavespeed Poll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Wavespeed Poll Error": {
+      "main": [
+        [
+          {
+            "node": "Runway Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Runway Fallback": {
+      "main": [
+        [
+          {
+            "node": "IF Runway Create Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Runway Create Error": {
+      "main": [
+        [
+          {
+            "node": "Kling Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Runway - Poll Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Runway - Poll Completion": {
+      "main": [
+        [
+          {
+            "node": "IF Runway Poll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Runway Poll Error": {
+      "main": [
+        [
+          {
+            "node": "Kling Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kling Fallback": {
+      "main": [
+        [
+          {
+            "node": "IF Kling Create Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Kling Create Error": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Kling - Poll Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kling - Poll Completion": {
+      "main": [
+        [
+          {
+            "node": "IF Kling Poll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Kling Poll Error": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Video": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to S3": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "vdo-gen",
+      "id": "vdo-gen"
+    },
+    {
+      "name": "session-4",
+      "id": "session-4"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-13T00:00:00.000Z",
+  "versionId": "1"
+}

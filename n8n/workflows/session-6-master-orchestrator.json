@@ -1,0 +1,844 @@
+{
+  "name": "Session 6 - Master Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "start-video-generation",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 500],
+      "webhookId": "master-orchestrator-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\n\nconst item = $input.first().json;\nconst executionId = `exec_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    script: item.script,\n    callback_url: item.callback_url,\n    config: {\n      parallel_scenes: item.config?.parallel_scenes || 5,\n      image_resolution: item.config?.image_resolution || '2K',\n      video_model: item.config?.video_model || 'kling-2.6',\n      transition_type: item.config?.transition_type || 'crossfade',\n      output_resolution: item.config?.output_resolution || '1080p'\n    },\n    started_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "generate-execution-id",
+      "name": "Generate Execution ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  message: 'Video generation started',\n  execution_id: $json.execution_id,\n  status_url: `${process.env.WEBHOOK_URL || 'http://localhost:5678'}/webhook/execution-status/${$json.execution_id}`\n}) }}",
+        "options": {
+          "responseCode": 202,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "immediate-response",
+      "name": "Respond 202 Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst item = $input.first().json;\n\nworkflowStaticData[item.execution_id] = {\n  status: 'running',\n  progress: 0,\n  current_step: 'script_enhancement',\n  started_at: item.started_at,\n  steps_completed: [],\n  errors: []\n};\n\nreturn [{ json: item }];"
+      },
+      "id": "init-execution-state",
+      "name": "Initialize Execution State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (process.env.WEBHOOK_URL || 'http://localhost:5678') + '/webhook/script-enhancement' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  execution_id: $json.execution_id,\n  script: $json.script,\n  config: {\n    style: 'cinematic'\n  }\n}) }}",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "call-session-1",
+      "name": "Session 1: Script Enhancement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-session1-success",
+              "leftValue": "={{ $json.body?.success === true || $json.success === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-session1-ok",
+      "name": "IF Session 1 OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1350, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst responseData = $input.first().json.body || $input.first().json;\n\nworkflowStaticData[executionId].progress = 20;\nworkflowStaticData[executionId].current_step = 'character_creation';\nworkflowStaticData[executionId].steps_completed.push('script_enhancement');\nworkflowStaticData[executionId].enhanced_script = responseData.data?.enhanced_script || responseData.enhanced_script;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    enhanced_script: workflowStaticData[executionId].enhanced_script,\n    structure: responseData.data?.structure || responseData.structure,\n    progress: 20\n  }\n}];"
+      },
+      "id": "progress-20",
+      "name": "Update Progress 20%",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (process.env.WEBHOOK_URL || 'http://localhost:5678') + '/webhook/character-creation' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  execution_id: $json.execution_id,\n  enhanced_script: $json.enhanced_script,\n  config: {\n    image_resolution: $('Generate Execution ID').item.json.config.image_resolution\n  }\n}) }}",
+        "options": {
+          "timeout": 600000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "call-session-2",
+      "name": "Session 2: Character Creation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 400],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-session2-success",
+              "leftValue": "={{ $json.body?.success === true || $json.success === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-session2-ok",
+      "name": "IF Session 2 OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2010, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst responseData = $input.first().json.body || $input.first().json;\n\nworkflowStaticData[executionId].progress = 40;\nworkflowStaticData[executionId].current_step = 'scene_processing';\nworkflowStaticData[executionId].steps_completed.push('character_creation');\nworkflowStaticData[executionId].characters = responseData.data?.characters || responseData.characters;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    characters: workflowStaticData[executionId].characters,\n    progress: 40\n  }\n}];"
+      },
+      "id": "progress-40",
+      "name": "Update Progress 40%",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (process.env.WEBHOOK_URL || 'http://localhost:5678') + '/webhook/scene-processing' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  execution_id: $json.execution_id,\n  enhanced_script: getWorkflowStaticData('global')[$json.execution_id].enhanced_script,\n  characters: $json.characters,\n  config: {\n    image_resolution: $('Generate Execution ID').item.json.config.image_resolution\n  }\n}) }}",
+        "options": {
+          "timeout": 900000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "call-session-3",
+      "name": "Session 3: Scene Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-session3-success",
+              "leftValue": "={{ $json.body?.success === true || $json.success === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-session3-ok",
+      "name": "IF Session 3 OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2670, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst responseData = $input.first().json.body || $input.first().json;\n\nworkflowStaticData[executionId].progress = 60;\nworkflowStaticData[executionId].current_step = 'video_generation';\nworkflowStaticData[executionId].steps_completed.push('scene_processing');\n\nconst scenes = responseData.data?.scenes || responseData.scenes || [];\nworkflowStaticData[executionId].scenes = scenes;\n\n// Return individual scene items for SplitInBatches\nreturn scenes.map(scene => ({ json: scene }));"
+      },
+      "id": "progress-60",
+      "name": "Update Progress 60%",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2890, 200]
+    },
+    {
+      "parameters": {
+        "batchSize": "={{ $('Generate Execution ID').item.json.config.parallel_scenes }}",
+        "options": {}
+      },
+      "id": "split-scenes",
+      "name": "SplitInBatches: Scenes",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [3110, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (process.env.WEBHOOK_URL || 'http://localhost:5678') + '/webhook/video-generation' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  execution_id: $('Generate Execution ID').item.json.execution_id,\n  scene: $json,\n  config: {\n    video_model: $('Generate Execution ID').item.json.config.video_model\n  }\n}) }}",
+        "options": {
+          "timeout": 900000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "call-session-4",
+      "name": "Session 4: Video Generation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3330, 200],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const allResults = $input.all();\n\nconst videos = allResults\n  .filter(item => {\n    const data = item.json.body || item.json;\n    return data.success === true;\n  })\n  .map(item => {\n    const data = (item.json.body || item.json).data || item.json.body || item.json;\n    return {\n      scene_id: data.scene_id,\n      video_url: data.video_url,\n      duration_seconds: data.duration_seconds,\n      order: data.scene_id\n    };\n  });\n\nconst failed = allResults.filter(item => {\n  const data = item.json.body || item.json;\n  return data.success !== true;\n});\n\nif (failed.length > 0) {\n  console.log(`Warning: ${failed.length} scenes failed video generation`);\n}\n\nreturn [{\n  json: {\n    scene_videos: videos.sort((a, b) => a.order - b.order),\n    successful_count: videos.length,\n    failed_count: failed.length\n  }\n}];"
+      },
+      "id": "aggregate-videos",
+      "name": "Aggregate Video Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3550, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\n\nworkflowStaticData[executionId].progress = 90;\nworkflowStaticData[executionId].current_step = 'video_combining';\nworkflowStaticData[executionId].steps_completed.push('video_generation');\n\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    scene_videos: item.scene_videos,\n    successful_count: item.successful_count,\n    failed_count: item.failed_count,\n    progress: 90\n  }\n}];"
+      },
+      "id": "progress-90",
+      "name": "Update Progress 90%",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3770, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (process.env.WEBHOOK_URL || 'http://localhost:5678') + '/webhook/video-combining' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  execution_id: $json.execution_id,\n  scene_videos: $json.scene_videos,\n  config: {\n    transition_type: $('Generate Execution ID').item.json.config.transition_type,\n    output_resolution: $('Generate Execution ID').item.json.config.output_resolution\n  }\n}) }}",
+        "options": {
+          "timeout": 1200000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "call-session-5",
+      "name": "Session 5: Video Combining",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3990, 200],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-session5-success",
+              "leftValue": "={{ $json.body?.success === true || $json.success === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-session5-ok",
+      "name": "IF Session 5 OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4210, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst responseData = $input.first().json.body || $input.first().json;\nconst resultData = responseData.data || responseData;\n\nworkflowStaticData[executionId].progress = 100;\nworkflowStaticData[executionId].status = 'completed';\nworkflowStaticData[executionId].current_step = 'completed';\nworkflowStaticData[executionId].steps_completed.push('video_combining');\nworkflowStaticData[executionId].completed_at = new Date().toISOString();\nworkflowStaticData[executionId].final_video_url = resultData.final_video_url;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    final_video_url: resultData.final_video_url,\n    total_duration: resultData.total_duration,\n    file_size_bytes: resultData.file_size_bytes,\n    video_specs: resultData.video_specs,\n    progress: 100\n  }\n}];"
+      },
+      "id": "progress-100",
+      "name": "Update Progress 100%",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4430, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Generate Execution ID').item.json.callback_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  execution_id: $json.execution_id,\n  status: 'completed',\n  data: {\n    final_video_url: $json.final_video_url,\n    total_duration: $json.total_duration,\n    file_size_bytes: $json.file_size_bytes,\n    video_specs: $json.video_specs,\n    processing_time_ms: Date.now() - new Date($('Generate Execution ID').item.json.started_at).getTime()\n  },\n  completed_at: new Date().toISOString()\n}) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "callback-success",
+      "name": "Callback: Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4650, 100],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst errorInput = $input.first().json;\nconst errorBody = errorInput.body || errorInput;\n\nworkflowStaticData[executionId].status = 'failed';\nworkflowStaticData[executionId].errors.push({\n  step: workflowStaticData[executionId].current_step,\n  error: errorBody.error?.message || errorBody.error || errorBody.message || 'Unknown error',\n  timestamp: new Date().toISOString()\n});\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    status: 'failed',\n    error: {\n      step: workflowStaticData[executionId].current_step,\n      message: errorBody.error?.message || errorBody.error || errorBody.message || 'Unknown error',\n      progress_at_failure: workflowStaticData[executionId].progress\n    },\n    failed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 700]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Generate Execution ID').item.json.callback_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "callback-error",
+      "name": "Callback: Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 700],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Re-route Session 2 failures to same error handler\nconst workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst errorInput = $input.first().json;\nconst errorBody = errorInput.body || errorInput;\n\nworkflowStaticData[executionId].status = 'failed';\nworkflowStaticData[executionId].errors.push({\n  step: 'character_creation',\n  error: errorBody.error?.message || errorBody.error || errorBody.message || 'Character creation failed',\n  timestamp: new Date().toISOString()\n});\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    status: 'failed',\n    error: {\n      step: 'character_creation',\n      message: errorBody.error?.message || errorBody.error || errorBody.message || 'Character creation failed',\n      progress_at_failure: 20\n    },\n    failed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "error-handler-s2",
+      "name": "Error Handler S2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Generate Execution ID').item.json.callback_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "callback-error-s2",
+      "name": "Callback: Failed S2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 600],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst errorInput = $input.first().json;\nconst errorBody = errorInput.body || errorInput;\n\nworkflowStaticData[executionId].status = 'failed';\nworkflowStaticData[executionId].errors.push({\n  step: 'scene_processing',\n  error: errorBody.error?.message || errorBody.error || errorBody.message || 'Scene processing failed',\n  timestamp: new Date().toISOString()\n});\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    status: 'failed',\n    error: {\n      step: 'scene_processing',\n      message: errorBody.error?.message || errorBody.error || errorBody.message || 'Scene processing failed',\n      progress_at_failure: 40\n    },\n    failed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "error-handler-s3",
+      "name": "Error Handler S3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2890, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Generate Execution ID').item.json.callback_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "callback-error-s3",
+      "name": "Callback: Failed S3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3110, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const workflowStaticData = getWorkflowStaticData('global');\nconst executionId = $('Generate Execution ID').item.json.execution_id;\nconst errorInput = $input.first().json;\nconst errorBody = errorInput.body || errorInput;\n\nworkflowStaticData[executionId].status = 'failed';\nworkflowStaticData[executionId].errors.push({\n  step: 'video_combining',\n  error: errorBody.error?.message || errorBody.error || errorBody.message || 'Video combining failed',\n  timestamp: new Date().toISOString()\n});\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    status: 'failed',\n    error: {\n      step: 'video_combining',\n      message: errorBody.error?.message || errorBody.error || errorBody.message || 'Video combining failed',\n      progress_at_failure: 90\n    },\n    failed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "error-handler-s5",
+      "name": "Error Handler S5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4430, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Generate Execution ID').item.json.callback_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "callback-error-s5",
+      "name": "Callback: Failed S5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4650, 400],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Generate Execution ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Execution ID": {
+      "main": [
+        [
+          {
+            "node": "Respond 202 Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 202 Accepted": {
+      "main": [
+        [
+          {
+            "node": "Initialize Execution State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Execution State": {
+      "main": [
+        [
+          {
+            "node": "Session 1: Script Enhancement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session 1: Script Enhancement": {
+      "main": [
+        [
+          {
+            "node": "IF Session 1 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Session 1 OK": {
+      "main": [
+        [
+          {
+            "node": "Update Progress 20%",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Progress 20%": {
+      "main": [
+        [
+          {
+            "node": "Session 2: Character Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session 2: Character Creation": {
+      "main": [
+        [
+          {
+            "node": "IF Session 2 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Session 2 OK": {
+      "main": [
+        [
+          {
+            "node": "Update Progress 40%",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler S2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Progress 40%": {
+      "main": [
+        [
+          {
+            "node": "Session 3: Scene Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session 3: Scene Processing": {
+      "main": [
+        [
+          {
+            "node": "IF Session 3 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Session 3 OK": {
+      "main": [
+        [
+          {
+            "node": "Update Progress 60%",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Progress 60%": {
+      "main": [
+        [
+          {
+            "node": "SplitInBatches: Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SplitInBatches: Scenes": {
+      "main": [
+        [
+          {
+            "node": "Session 4: Video Generation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aggregate Video Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session 4: Video Generation": {
+      "main": [
+        [
+          {
+            "node": "SplitInBatches: Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Video Results": {
+      "main": [
+        [
+          {
+            "node": "Update Progress 90%",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Progress 90%": {
+      "main": [
+        [
+          {
+            "node": "Session 5: Video Combining",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session 5: Video Combining": {
+      "main": [
+        [
+          {
+            "node": "IF Session 5 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Session 5 OK": {
+      "main": [
+        [
+          {
+            "node": "Update Progress 100%",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler S5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Progress 100%": {
+      "main": [
+        [
+          {
+            "node": "Callback: Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Callback: Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler S2": {
+      "main": [
+        [
+          {
+            "node": "Callback: Failed S2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler S3": {
+      "main": [
+        [
+          {
+            "node": "Callback: Failed S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler S5": {
+      "main": [
+        [
+          {
+            "node": "Callback: Failed S5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "saveExecutionProgress": true
+  },
+  "staticData": {
+    "global": {}
+  },
+  "tags": [
+    {
+      "name": "vdo-gen",
+      "id": "vdo-gen"
+    },
+    {
+      "name": "session-6",
+      "id": "session-6"
+    },
+    {
+      "name": "orchestrator",
+      "id": "orchestrator"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-13T00:00:00.000Z",
+  "versionId": "1"
+}

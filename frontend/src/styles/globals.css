@@ -1,0 +1,57 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Node category colors */
+  --color-node-input-light: #10b981;
+  --color-node-input-dark: #059669;
+  --color-node-processing-light: #3b82f6;
+  --color-node-processing-dark: #2563eb;
+  --color-node-generation-light: #8b5cf6;
+  --color-node-generation-dark: #7c3aed;
+  --color-node-output-light: #f59e0b;
+  --color-node-output-dark: #d97706;
+
+  /* App surface colors */
+  --color-surface: #ffffff;
+  --color-surface-dark: #1e1e2e;
+  --color-surface-secondary: #f8fafc;
+  --color-surface-secondary-dark: #262637;
+}
+
+@layer base {
+  * {
+    @apply border-gray-200 dark:border-gray-700;
+  }
+
+  body {
+    @apply bg-surface text-gray-900 antialiased transition-colors;
+  }
+
+  .dark body {
+    @apply bg-surface-dark text-gray-100;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: theme(--color-gray-300);
+    border-radius: 3px;
+  }
+
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: theme(--color-gray-600);
+  }
+}

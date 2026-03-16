@@ -1,0 +1,101 @@
+{
+  "name": "Session 6 - Execution Status",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "execution-status",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-status",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "execution-status-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\n\n// Support both query param and path-style execution_id\nconst executionId = item.query?.execution_id || item.body?.execution_id || item.headers?.['x-execution-id'];\n\nif (!executionId) {\n  return [{\n    json: {\n      success: false,\n      error: 'Missing execution_id. Provide via query parameter: ?execution_id=exec_...'\n    }\n  }];\n}\n\n// Read from the master orchestrator workflow's static data\n// Note: n8n static data is per-workflow, so this workflow needs\n// its own tracking or the orchestrator must write to a shared store.\n// For simplicity, we use a shared global static data approach.\nconst workflowStaticData = getWorkflowStaticData('global');\nconst state = workflowStaticData[executionId];\n\nif (!state) {\n  return [{\n    json: {\n      success: false,\n      error: 'Execution not found',\n      execution_id: executionId\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    success: true,\n    execution_id: executionId,\n    status: state.status,\n    progress: state.progress,\n    current_step: state.current_step,\n    steps_completed: state.steps_completed,\n    started_at: state.started_at,\n    completed_at: state.completed_at || null,\n    final_video_url: state.final_video_url || null,\n    errors: state.errors\n  }\n}];"
+      },
+      "id": "lookup-status",
+      "name": "Lookup Execution Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.success ? 200 : ($json.error === 'Execution not found' ? 404 : 400) }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-status",
+      "name": "Respond with Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Lookup Execution Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Execution Status": {
+      "main": [
+        [
+          {
+            "node": "Respond with Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "vdo-gen",
+      "id": "vdo-gen"
+    },
+    {
+      "name": "session-6",
+      "id": "session-6"
+    },
+    {
+      "name": "status",
+      "id": "status"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-13T00:00:00.000Z",
+  "versionId": "1"
+}

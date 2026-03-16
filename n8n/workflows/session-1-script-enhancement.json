@@ -1,0 +1,221 @@
+{
+  "name": "Session 1 - Script Enhancement",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "script-enhancement",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "f712188a-b71d-4cdd-821a-789f1bce43fd",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1328,
+        208
+      ],
+      "webhookId": "script-enhancement-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and store variables for use throughout the workflow\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    execution_id: item.execution_id,\n    callback_url: item.callback_url || null,\n    original_script: item.script,\n    target_scenes: item.config?.target_scenes || 0,\n    style: item.config?.style || 'cinematic',\n    language: item.config?.language || 'en',\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "288a88f5-a39a-4809-814a-5e2273614568",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the AI response and validate structure\nconst item = $input.first().json;\n\n// Handle both Anthropic and OpenAI response formats\nconst response = item.body?.content?.[0]?.text ||\n                 item.content?.[0]?.text ||\n                 item.body?.choices?.[0]?.message?.content ||\n                 item.choices?.[0]?.message?.content;\n\nif (!response) {\n  throw new Error('No content found in AI response');\n}\n\nlet parsed;\ntry {\n  // Extract JSON from response (handle markdown code blocks)\n  const jsonMatch = response.match(/```json\\n?([\\s\\S]*?)\\n?```/) ||\n                    response.match(/\\{[\\s\\S]*\\}/);\n  const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : response;\n  parsed = JSON.parse(jsonStr);\n} catch (e) {\n  throw new Error(`Failed to parse AI response as JSON: ${e.message}`);\n}\n\n// Validate required fields\nconst required = ['title', 'scenes', 'characters'];\nfor (const field of required) {\n  if (!parsed[field]) {\n    throw new Error(`Missing required field: ${field}`);\n  }\n}\n\n// Validate scenes\nif (!Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {\n  throw new Error('Scenes must be a non-empty array');\n}\n\n// Validate characters\nif (!Array.isArray(parsed.characters) || parsed.characters.length === 0) {\n  throw new Error('Characters must be a non-empty array');\n}\n\n// Determine which provider was used\nconst isFromOpenAI = item.body?.choices !== undefined || item.choices !== undefined;\nconst provider = isFromOpenAI ? 'openai' : 'anthropic';\n\nreturn [{\n  json: {\n    execution_id: $('Set Variables').item.json.execution_id,\n    enhanced_script: parsed,\n    structure: {\n      scene_count: parsed.scenes.length,\n      character_count: parsed.characters.length,\n      estimated_duration: parsed.duration_estimate ||\n        parsed.scenes.reduce((acc, s) => acc + (s.duration_seconds || 10), 0)\n    },\n    metadata: {\n      original_length: $('Set Variables').item.json.original_script.length,\n      enhanced_at: new Date().toISOString(),\n      provider: provider\n    }\n  }\n}];"
+      },
+      "id": "bfa286e6-df33-43e2-bea5-40491dd19023",
+      "name": "Parse & Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  execution_id: $json.execution_id,\n  data: {\n    enhanced_script: $json.enhanced_script,\n    structure: $json.structure,\n    metadata: $json.metadata\n  }\n}) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ae7b6038-b8e8-4a07-80da-5c41538d52ec",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -304,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Please enhance and structure the following script for AI video generation.\nStyle preference: {{ $json.style }}\nTarget scene count: {{ $json.target_scenes || 'auto-determine based on content' }}\n\nORIGINAL SCRIPT:\n{{ $json.original_script }}\n\nRespond with only the JSON structure, no additional text.",
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "You are a professional screenwriter and video production expert. Your task is to transform raw script ideas into structured screenplays optimized for AI video generation.\n\nOutput must be valid JSON with the following structure:\n\n{\n    \"title\": \"Video title\",\n    \"synopsis\": \"Brief 2-3 sentence summary\",\n    \"style\": \"Visual style description\",\n    \"duration_estimate\": \"Estimated video length in seconds\",\n    \"scenes\": [\n        {\n            \"scene_number\": 1,\n            \"title\": \"Scene title\",\n            \"description\": \"Detailed scene description\",\n            \"characters\": [\"Character names appearing\"],\n            \"location\": \"Scene location\",\n            \"time_of_day\": \"Day/Night/Dawn/Dusk\",\n            \"mood\": \"Emotional tone\",\n            \"camera_notes\": \"Suggested camera movements\",\n            \"dialogue\": \"Any dialogue (optional)\",\n            \"duration_seconds\": 10\n        }\n    ],\n    \"characters\": [\n        {\n            \"name\": \"Character name\",\n            \"description\": \"Physical appearance description\",\n            \"personality\": \"Brief personality traits\",\n            \"costume\": \"Clothing/outfit description\"\n        }\n    ],\n    \"visual_style\": {\n        \"color_palette\": \"Description of colors\",\n        \"lighting\": \"Lighting style\",\n        \"aspect_ratio\": \"16:9 or other\",\n        \"overall_aesthetic\": \"Visual aesthetic description\"\n    }\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -880,
+        208
+      ],
+      "id": "83b2f223-60f4-4b04-a962-eb7fc83af3fd",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-opus-4-6",
+          "mode": "list",
+          "cachedResultName": "Claude Opus 4.6"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -872,
+        432
+      ],
+      "id": "8096b059-b3dd-46d6-93d1-abcfb41a68cd",
+      "name": "Anthropic Chat Model",
+      "credentials": {
+        "anthropicApi": {
+          "id": "bdijgfcPpSP9BoKT",
+          "name": "Workflow Landing Page"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -744,
+        432
+      ],
+      "id": "032e0d74-957b-43c1-a12c-014a65f4cb2d",
+      "name": "OpenAI Chat Model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "zqv79r0myzt0EKhq",
+          "name": "OpenAi Live"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "26ddc595-b16b-4669-bee6-45a255cad89b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0b008bd86df5902c8c20987844e8ef7a6cf9a5639f4abd7f8a22764455c02c65"
+  },
+  "id": "UPpdkUxWsDvx0uiQ",
+  "tags": []
+}

@@ -1,0 +1,856 @@
+{
+  "name": "Session 2 - Character Creation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "character-creation",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "ec82c0bd-1711-4e10-8d4c-f2d1486020f8",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2736,
+        256
+      ],
+      "webhookId": "character-creation-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split characters array into individual items for loop processing\nconst characters = $input.first().json.json.output.characters;\n\nreturn characters.map(character => ({\n  json: character\n}));"
+      },
+      "id": "2d2a6e75-0a49-4ff9-9cf9-6a9acd2938a5",
+      "name": "Split Characters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2080,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "cb2d03c9-88be-44a5-90d7-7abe15674bd7",
+      "name": "Loop Over Characters",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1856,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build comprehensive image generation prompt for this character\nconst character = $input.first().json;\nconst visualStyle = $('Set Variables').first().json.json.output.visual_style;\n\nconst prompt = [\n  `Professional portrait photograph of ${character.name}:`,\n  `Appearance: ${character.description}.`,\n  `Outfit: ${character.costume}.`,\n  `Expression: ${character.personality.split(',')[0].trim()} demeanor.`,\n  `Style: ${visualStyle.overall_aesthetic}.`,\n  `Color palette: ${visualStyle.color_palette}.`,\n  'High quality, detailed, professional lighting.',\n  'Clean background, studio portrait style.',\n  'Consistent character design for video production.'\n].join(' ');\n\nreturn [{\n  json: {\n    character_name: character.name,\n    character_data: character,\n    image_prompt: prompt,\n    negative_prompt: 'blurry, low quality, distorted, multiple people, text, watermark'\n  }\n}];"
+      },
+      "id": "73b98437-dcf5-4785-b3a7-ee4aa508a904",
+      "name": "Generate Image Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1632,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.kie.ai/api/v1/jobs/createTask",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'google/nano-banana',\n  input: {\n    prompt: $json.image_prompt,\n    image_input: [],\n    google_search: false,\n    aspect_ratio: $('Set Variables').item.json.json.output.visual_style.aspect_ratio,\n    output_format: 'png'\n  }\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "7196e1f3-3568-4f5c-8c00-26e280b9cc48",
+      "name": "KIE AI - Create Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1408,
+        176
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X1q6kfYvl7o98WxD",
+          "name": "WSK Staging"
+        },
+        "httpBearerAuth": {
+          "id": "zZdoW5YKlZux4HEF",
+          "name": "VideoGen kie creds"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kie-create-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.body?.code !== undefined && $json.body.code !== 200) || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8bed1cbc-c0bf-4b15-8f3c-c6b25fe81830",
+      "name": "IF KIE Create Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1184,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-kie-poll-error",
+              "leftValue": "={{ $json.data.state !== \"success\" }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cacb738e-f157-4509-83aa-1c2e6805f2ea",
+      "name": "IF KIE Poll Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -736,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fal.run/fal-ai/flux-pro",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  prompt: $('Generate Image Prompt').first().json.image_prompt,\n  image_size: 'square_hd',\n  num_images: 1,\n  enable_safety_checker: true\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "a85f537e-bb1d-4cdc-8dbb-2e316dcdfa0f",
+      "name": "FAL AI Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -304,
+        112
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X1q6kfYvl7o98WxD",
+          "name": "WSK Staging"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-fal-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "26c2e67f-bdf0-48b8-b2f8-85b6ee44f386",
+      "name": "IF FAL Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  text_prompts: [\n    {\n      text: $('Generate Image Prompt').first().json.image_prompt,\n      weight: 1\n    },\n    {\n      text: $('Generate Image Prompt').first().json.negative_prompt,\n      weight: -1\n    }\n  ],\n  cfg_scale: 7,\n  height: 1024,\n  width: 1024,\n  samples: 1,\n  steps: 30\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "a1048b83-c0bc-4c5d-bfed-a9edbefdac36",
+      "name": "Stability AI Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        144,
+        16
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X1q6kfYvl7o98WxD",
+          "name": "WSK Staging"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Stability AI response into standard format\nconst item = $input.first().json;\n\n// Check for error\nif (item.error || (item.statusCode && item.statusCode >= 400)) {\n  // All providers failed - return failed character with no image\n  return [{\n    json: {\n      success: false,\n      provider: 'none',\n      image_url: null,\n      task_id: null,\n      character_name: $('Generate Image Prompt').first().json.character_name,\n      character_data: $('Generate Image Prompt').first().json.character_data,\n      error: 'All image generation providers failed'\n    }\n  }];\n}\n\n// Stability returns base64 artifacts\nconst artifacts = item.body?.artifacts || item.artifacts || [];\nif (artifacts.length === 0) {\n  return [{\n    json: {\n      success: false,\n      provider: 'stability',\n      image_url: null,\n      task_id: null,\n      character_name: $('Generate Image Prompt').first().json.character_name,\n      character_data: $('Generate Image Prompt').first().json.character_data,\n      error: 'Stability AI returned no artifacts'\n    }\n  }];\n}\n\n// Stability returns base64 images, we need to handle this differently\n// Store the base64 data for S3 upload\nreturn [{\n  json: {\n    success: true,\n    provider: 'stability',\n    image_base64: artifacts[0].base64,\n    image_url: null,\n    task_id: null,\n    character_name: $('Generate Image Prompt').first().json.character_name,\n    character_data: $('Generate Image Prompt').first().json.character_data\n  }\n}];"
+      },
+      "id": "cd222e26-7088-4d4d-a48b-161d6dffd278",
+      "name": "Normalize Stability Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize FAL AI response into standard format\nconst item = $input.first().json;\n\nconst imageUrl = item.body?.images?.[0]?.url ||\n                 item.images?.[0]?.url ||\n                 null;\n\nif (!imageUrl) {\n  throw new Error('FAL AI returned no image URL');\n}\n\nreturn [{\n  json: {\n    success: true,\n    provider: 'fal',\n    image_url: imageUrl,\n    task_id: null,\n    character_name: $('Generate Image Prompt').first().json.character_name,\n    character_data: $('Generate Image Prompt').first().json.character_data\n  }\n}];"
+      },
+      "id": "e31b40d5-0bdf-4b89-9585-9823a117969e",
+      "name": "Normalize FAL Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Upload the generated image to S3\n// Downloads from source URL (or uses base64) and uploads to S3 path\nconst item = $input.first().json;\nconst s3BasePath = $('variable').first().json.s3_base_path;\nconst fileName = item.character_name.toLowerCase().replace(/\\s+/g, '_');\nconst s3Key = `${s3BasePath}/${fileName}.png`;\n\nif (!item.success) {\n  // Skip upload for failed characters\n  return [{\n    json: {\n      ...item,\n      s3_url: null,\n      s3_key: null\n    }\n  }];\n}\n\nlet imageBuffer;\n\nif (item.image_base64) {\n  // Stability AI returns base64\n  imageBuffer = Buffer.from(item.image_base64, 'base64');\n} else if (item.image_url) {\n  // KIE/FAL return URLs - download the image\n  imageBuffer = await this.helpers.httpRequest({\n    method: 'GET',\n    url: item.image_url,\n    encoding: 'arraybuffer'\n  });\n} else {\n  return [{\n    json: {\n      ...item,\n      s3_url: null,\n      s3_key: null,\n      error: 'No image data available for upload'\n    }\n  }];\n}\n\n// Upload to S3 via HTTP (pre-signed URL or direct)\n// This uses the AWS S3 PutObject via the S3 credentials\nconst s3Bucket = $env.S3_BUCKET || 'vdo-gen';\nconst s3Region = $env.S3_REGION || 'us-east-1';\nconst s3Url = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/${s3Key}`;\n\ntry {\n  await this.helpers.httpRequest({\n    method: 'PUT',\n    url: s3Url,\n    headers: {\n      'Content-Type': 'image/png'\n    },\n    body: imageBuffer,\n    encoding: 'arraybuffer'\n  });\n} catch (uploadError) {\n  // Retry up to 3 times\n  let uploaded = false;\n  for (let retry = 0; retry < 3; retry++) {\n    try {\n      await new Promise(resolve => setTimeout(resolve, 2000 * (retry + 1)));\n      await this.helpers.httpRequest({\n        method: 'PUT',\n        url: s3Url,\n        headers: {\n          'Content-Type': 'image/png'\n        },\n        body: imageBuffer,\n        encoding: 'arraybuffer'\n      });\n      uploaded = true;\n      break;\n    } catch (e) {\n      // Continue retrying\n    }\n  }\n\n  if (!uploaded) {\n    return [{\n      json: {\n        ...item,\n        s3_url: null,\n        s3_key: s3Key,\n        error: `S3 upload failed after 3 retries: ${uploadError.message}`\n      }\n    }];\n  }\n}\n\nreturn [{\n  json: {\n    success: true,\n    provider: item.provider,\n    character_name: item.character_name,\n    character_data: item.character_data,\n    s3_url: s3Url,\n    s3_key: s3Key,\n    image_url: item.image_url\n  }\n}];"
+      },
+      "id": "08c7007a-217e-49e2-a7ad-b492695be247",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        176
+      ],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store the result and loop back for next character\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    character_name: item.character_name,\n    character_data: item.character_data,\n    s3_url: item.s3_url || null,\n    provider: item.provider || 'none',\n    success: item.success !== false\n  }\n}];"
+      },
+      "id": "d8248fce-73bc-498a-8ea2-573fdd837dce",
+      "name": "Store Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all character results into final response\nconst allItems = $input.all();\nconst executionId = $('variable').first().json.execution_id;\n$('When Executed by Another Workflow').first().json.output\nconst characters = allItems.map(item => ({\n  name: item.json.character_name,\n  description: item.json.character_data?.description || '',\n  personality: item.json.character_data?.personality || '',\n  costume: item.json.character_data?.costume || '',\n  image_url: item.json.s3_url || null,\n  provider: item.json.provider || 'none',\n  generated_at: new Date().toISOString()\n}));\n\nconst successful = characters.filter(c => c.image_url !== null).length;\nconst failed = characters.filter(c => c.image_url === null).length;\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    characters: characters,\n    total_characters: characters.length,\n    generation_stats: {\n      successful: successful,\n      failed: failed\n    }\n  }\n}];"
+      },
+      "id": "88c9e2e0-32a2-4f52-b892-f8131684adf6",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1632,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  execution_id: $json.execution_id,\n  data: {\n    characters: $json.characters,\n    total_characters: $json.total_characters,\n    generation_stats: $json.generation_stats\n  }\n}) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "199d4c02-0911-4b2d-add9-5c5eb36295fa",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -1408,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2736,
+        64
+      ],
+      "id": "61ffb967-25b4-4412-a37c-85f14afe5e90",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and store variables for use throughout the workflow\nconst item = $input.first().json.enhanced_script.visual_style;\n\nreturn [{\n  json: {\n    execution_id: item.execution_id,\n    callback_url: item.callback_url || null,\n    characters: item.enhanced_script.characters,\n    visual_style: item.enhanced_script.visual_style,\n    image_resolution: item.config?.image_resolution || '2K',\n    aspect_ratio: item.config?.aspect_ratio || '1:1',\n    s3_base_path: `${item.execution_id}/characters`\n  }\n}];"
+      },
+      "id": "75432f4c-122c-424c-a77f-fb28e8f2414b",
+      "name": "variable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1840,
+        -112
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      ...$input.first(),\n      image_resolution: '2K',\n      aspect_ratio: '1:1',\n      s3_base_path: `characters`\n    }\n  }\n];"
+      },
+      "id": "e003ba32-6bb9-4253-b58a-6db2669f9c51",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2336,
+        160
+      ]
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -464,
+        384
+      ],
+      "id": "abeab50e-0562-472a-9b91-352f430b5447",
+      "name": "Wait",
+      "webhookId": "5580413b-8c38-4fa4-b5fa-cbe25b5cae7a"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.kie.ai/api/v1/jobs/recordInfo?taskId={{ $('KIE AI - Create Task').item.json.body.data.taskId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "options": {
+          "response": {},
+          "timeout": 30000
+        }
+      },
+      "id": "3f39beea-8d33-46f3-aaed-d490aee934a6",
+      "name": "KIE AI - Get Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -960,
+        272
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X1q6kfYvl7o98WxD",
+          "name": "WSK Staging"
+        },
+        "httpBearerAuth": {
+          "id": "zZdoW5YKlZux4HEF",
+          "name": "VideoGen kie creds"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "json": {
+          "output": {
+            "title": "Cat vs Dog: The Eternal Rivalry",
+            "synopsis": "A cinematic showdown between a cunning house cat and an exuberant golden retriever as they compete for dominance over a cozy suburban home. What begins as small territorial skirmishes escalates into an epic battle of wits, ending in an unexpected truce.",
+            "style": "Cinematic, dramatic close-ups with epic undertones, blending humor with visual grandeur — think nature documentary meets action film.",
+            "duration_estimate": "60-75 seconds",
+            "scenes": [
+              {
+                "scene_number": 1,
+                "title": "The Calm Before the Storm",
+                "description": "A pristine suburban living room bathed in warm golden light. A sleek black cat sits regally atop a tall bookshelf, eyes half-closed, surveying the room below like a king on a throne. The room is perfectly still. A single dust mote floats through a sunbeam.",
+                "characters": [
+                  "Shadow"
+                ],
+                "location": "Suburban living room — bookshelf perch",
+                "time_of_day": "Day",
+                "mood": "Calm, regal, quietly tense",
+                "camera_notes": "Slow cinematic dolly-in toward the cat on the bookshelf. Start wide to establish the room, then push into a close-up of the cat's piercing green eyes. Shallow depth of field.",
+                "dialogue": "",
+                "duration_seconds": 10
+              },
+              {
+                "scene_number": 2,
+                "title": "The Challenger Arrives",
+                "description": "The front door bursts open and a golden retriever bounds into the living room with uncontainable energy, tongue out, tail wagging furiously. The dog slides across the hardwood floor, crashing into a side table and sending a vase wobbling. The cat's eyes snap open wide.",
+                "characters": [
+                  "Biscuit"
+                ],
+                "location": "Suburban living room — front entrance",
+                "time_of_day": "Day",
+                "mood": "Chaotic, energetic, comedic",
+                "camera_notes": "Low-angle tracking shot following the dog as it bursts through the door. Quick cut to the cat's eyes snapping open in dramatic close-up. Slight slow-motion on the vase wobble.",
+                "dialogue": "",
+                "duration_seconds": 8
+              },
+              {
+                "scene_number": 3,
+                "title": "The Staredown",
+                "description": "The cat and dog lock eyes from across the room. The dog stands frozen mid-step, one paw raised, tail slowly stopping. The cat's tail flicks ominously. A tumbleweed-like dust bunny rolls across the hardwood floor between them. The tension is palpable — an old-western standoff in a suburban home.",
+                "characters": [
+                  "Shadow",
+                  "Biscuit"
+                ],
+                "location": "Suburban living room — center of room",
+                "time_of_day": "Day",
+                "mood": "Intense, dramatic, suspenseful",
+                "camera_notes": "Rapid shot-reverse-shot between the cat's narrowing eyes and the dog's wide, determined stare. Extreme close-ups. Wide establishing shot from the side showing both animals facing off. Slight zoom-in to build tension.",
+                "dialogue": "",
+                "duration_seconds": 10
+              },
+              {
+                "scene_number": 4,
+                "title": "The Chase",
+                "description": "The dog lunges forward and the cat leaps off the bookshelf with acrobatic grace. An epic chase erupts through the house — the dog barrels through the kitchen knocking over a trash can, the cat parkours across countertops and leaps over furniture. Papers fly, cushions scatter, and a houseplant topples.",
+                "characters": [
+                  "Shadow",
+                  "Biscuit"
+                ],
+                "location": "Suburban home — living room, hallway, and kitchen",
+                "time_of_day": "Day",
+                "mood": "High-energy, thrilling, comedic chaos",
+                "camera_notes": "Dynamic handheld tracking shots following the chase. Quick cuts between cat and dog perspectives. Low-angle shots as the dog skids around corners. Overhead shot of the cat leaping across the kitchen island. Brief slow-motion on key acrobatic moments.",
+                "dialogue": "",
+                "duration_seconds": 15
+              },
+              {
+                "scene_number": 5,
+                "title": "The Final Stand",
+                "description": "Both animals reach the living room again, facing each other. The cat arches its back and hisses, fur puffed up dramatically. The dog drops into a play bow, barking excitedly. They circle each other slowly around a fallen cushion. The room is in complete disarray — evidence of the chaos they've caused.",
+                "characters": [
+                  "Shadow",
+                  "Biscuit"
+                ],
+                "location": "Suburban living room — now in disarray",
+                "time_of_day": "Day",
+                "mood": "Climactic, tense, dramatic",
+                "camera_notes": "Orbiting camera circling both animals slowly. Dramatic low angles. Cross-cutting between close-ups of hissing cat and barking dog. Pull back to a wide shot showing the destroyed room.",
+                "dialogue": "",
+                "duration_seconds": 10
+              },
+              {
+                "scene_number": 6,
+                "title": "The Unexpected Truce",
+                "description": "A sunbeam shifts and falls directly onto a large cushion on the floor between them. Both animals pause. The cat cautiously approaches the warm spot and curls up. The dog hesitates, then slowly lies down beside the cat. After a tense moment, the cat begins to purr. The dog's tail wags gently. They both close their eyes and fall asleep together in the golden light.",
+                "characters": [
+                  "Shadow",
+                  "Biscuit"
+                ],
+                "location": "Suburban living room — sunlit patch on the floor",
+                "time_of_day": "Day — golden hour light",
+                "mood": "Warm, peaceful, heartwarming resolution",
+                "camera_notes": "Slow overhead crane shot descending gently toward the two animals curling up together. Soft focus on the edges of the frame. Final shot is a close-up of the cat and dog sleeping side by side, breathing softly. Slow fade to black.",
+                "dialogue": "",
+                "duration_seconds": 15
+              },
+              {
+                "scene_number": 7,
+                "title": "Title Card — End",
+                "description": "Black screen with the title 'Cat vs Dog' fading in with elegant serif typography. A small paw print appears beneath the title — half cat, half dog. The subtitle reads: 'Some rivalries end in friendship.'",
+                "characters": [],
+                "location": "Title card — black background",
+                "time_of_day": "Day",
+                "mood": "Reflective, warm, conclusive",
+                "camera_notes": "Static frame. Smooth fade-in of text. Hold for a few seconds, then fade to black.",
+                "dialogue": "",
+                "duration_seconds": 7
+              }
+            ],
+            "characters": [
+              {
+                "name": "Shadow",
+                "description": "A sleek, elegant black cat with piercing emerald green eyes and glossy short fur. Medium build, graceful and agile with sharp, precise movements.",
+                "personality": "Regal, cunning, independent, and slightly dramatic. Considers himself the undisputed ruler of the household. Quick reflexes and superior agility.",
+                "costume": "Natural black fur with no collar — a true free spirit. A subtle sheen on the coat catching the light."
+              },
+              {
+                "name": "Biscuit",
+                "description": "A large, fluffy golden retriever with warm brown eyes, a perpetually wagging tail, and a big dopey grin. Muscular but clumsy, with oversized paws.",
+                "personality": "Exuberant, loyal, clumsy, and endlessly optimistic. Sees everything as a game and everyone as a potential friend — even his sworn rival.",
+                "costume": "Golden fur with a worn red collar and a small bone-shaped tag that jingles when he runs."
+              }
+            ],
+            "visual_style": {
+              "color_palette": "Warm golden tones and amber hues for the peaceful moments, contrasted with cooler desaturated blues and sharper highlights during the chase and confrontation sequences. Rich earth tones throughout the home setting.",
+              "lighting": "Natural warm sunlight streaming through large windows, creating dramatic volumetric light beams and long shadows. Golden hour quality for the opening and closing scenes. Slightly harder, more directional light during the chase for dramatic contrast.",
+              "aspect_ratio": "16:9",
+              "overall_aesthetic": "Cinematic and polished with a widescreen filmic quality. Inspired by nature documentaries meets Wes Anderson-style symmetry and warmth. Dramatic camera angles elevate a simple domestic moment into an epic narrative. Shallow depth of field and lens flares add visual richness."
+            }
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Characters": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Characters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Characters": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Image Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Image Prompt": {
+      "main": [
+        [
+          {
+            "node": "KIE AI - Create Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIE AI - Create Task": {
+      "main": [
+        [
+          {
+            "node": "IF KIE Create Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF KIE Create Error": {
+      "main": [
+        [
+          {
+            "node": "FAL AI Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "KIE AI - Get Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF KIE Poll Error": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAL AI Fallback": {
+      "main": [
+        [
+          {
+            "node": "IF FAL Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF FAL Error": {
+      "main": [
+        [
+          {
+            "node": "Stability AI Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize FAL Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stability AI Fallback": {
+      "main": [
+        [
+          {
+            "node": "Normalize Stability Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Stability Response": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize FAL Response": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to S3": {
+      "main": [
+        [
+          {
+            "node": "Store Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Characters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Split Characters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "KIE AI - Get Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIE AI - Get Image": {
+      "main": [
+        [
+          {
+            "node": "IF KIE Poll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "d94d7189-c7b2-4c5c-91da-6e08045ef77d",
+  "meta": {
+    "instanceId": "0b008bd86df5902c8c20987844e8ef7a6cf9a5639f4abd7f8a22764455c02c65"
+  },
+  "id": "iVTjNJQBdaZzzmII",
+  "tags": []
+}

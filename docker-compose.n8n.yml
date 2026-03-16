@@ -1,0 +1,109 @@
+version: '3.8'
+
+# n8n Video Generation Workflow Infrastructure
+# Part of VDO-GEN AI Video Generation Platform
+#
+# Usage:
+#   docker compose -f docker-compose.n8n.yml up -d
+#
+# Documentation: docs/n8n/readme.md
+
+services:
+  # n8n Workflow Automation
+  n8n:
+    image: n8nio/n8n:latest
+    # Uncomment to use custom image with FFmpeg pre-installed:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.n8n
+    restart: unless-stopped
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      # n8n Configuration
+      - N8N_HOST=${N8N_HOST:-0.0.0.0}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY is required}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678}
+      - GENERIC_TIMEZONE=${TZ:-UTC}
+
+      # Execution Settings
+      - EXECUTIONS_PROCESS=main
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_PROGRESS=true
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      - N8N_METRICS=true
+
+      # Security
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-false}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-}
+
+      # AI Provider API Keys (for credentials)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - KIE_API_KEY=${KIE_API_KEY:-}
+      - WAVESPEED_API_KEY=${WAVESPEED_API_KEY:-}
+      - FAL_API_KEY=${FAL_API_KEY:-}
+      - STABILITY_API_KEY=${STABILITY_API_KEY:-}
+      - RUNWAY_API_KEY=${RUNWAY_API_KEY:-}
+      - KLING_API_KEY=${KLING_API_KEY:-}
+
+      # S3 Storage
+      - S3_BUCKET=${S3_BUCKET:-vdo-gen-assets}
+      - S3_REGION=${S3_REGION:-us-east-1}
+      - S3_ENDPOINT=${S3_ENDPOINT:-}
+      - AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-}
+      - AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-}
+
+      # VDO-GEN Backend
+      - VDOGEN_CALLBACK_URL=${VDOGEN_CALLBACK_URL:-http://host.docker.internal:3001/api/v1/webhooks/n8n}
+
+    volumes:
+      # Persistent n8n data
+      - n8n_data:/home/node/.n8n
+
+      # Workflow files (optional - for version control)
+      - ./n8n-workflows:/home/node/.n8n/workflows:ro
+
+      # Temp directory for video processing
+      - n8n_temp:/tmp/n8n
+
+    networks:
+      - vdo-gen-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+  # Optional: n8n with FFmpeg for video processing
+  # Uncomment if Session 5 (Video Combining) runs inside n8n
+  # n8n-ffmpeg:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.n8n-ffmpeg
+  #   restart: unless-stopped
+  #   # ... same configuration as n8n above ...
+
+volumes:
+  n8n_data:
+    driver: local
+  n8n_temp:
+    driver: local
+
+networks:
+  vdo-gen-network:
+    name: vdo-gen-network
+    driver: bridge
+    # If VDO-GEN backend is in a separate compose file, make this external:
+    # external: true

@@ -1,0 +1,914 @@
+{
+  "name": "Session 3 - Scene Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scene-processing",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "scene-processing-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract and store variables for use throughout the workflow\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    execution_id: item.execution_id,\n    callback_url: item.callback_url || null,\n    characters: item.characters,\n    visual_style: item.enhanced_script.visual_style,\n    image_resolution: item.config?.image_resolution || '2K',\n    aspect_ratio: item.config?.aspect_ratio || '16:9',\n    s3_base_path: `${item.execution_id}/scenes`\n  }\n}];"
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split scenes array into individual items for batch processing\nconst item = $input.first().json;\nconst scenes = $('Webhook').first().json.enhanced_script.scenes;\n\nreturn scenes.map(scene => ({\n  json: scene\n}));"
+      },
+      "id": "expand-scenes",
+      "name": "Expand Scenes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "batchSize": 5
+        }
+      },
+      "id": "loop-scenes",
+      "name": "Loop Over Scenes",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Map scene characters to their reference images from Session 2 output\nconst scene = $input.first().json;\nconst allCharacters = $('Set Variables').first().json.characters;\nconst sceneCharacterNames = scene.characters || [];\n\nconst characterRefs = sceneCharacterNames\n  .map(name => allCharacters.find(c => c.name === name))\n  .filter(c => c && c.image_url)\n  .map(c => ({\n    name: c.name,\n    reference_url: c.image_url,\n    description: c.description\n  }));\n\n// Build scene_characters with full descriptions for the AI prompt\nconst sceneCharacters = sceneCharacterNames.map(name => {\n  const char = allCharacters.find(c => c.name === name);\n  return char || { name, description: 'No description available' };\n});\n\nreturn [{\n  json: {\n    ...scene,\n    character_references: characterRefs,\n    scene_characters: sceneCharacters\n  }\n}];"
+      },
+      "id": "prepare-scene-data",
+      "name": "Prepare Scene Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-sonnet-4-20250514',\n  max_tokens: 4096,\n  temperature: 0.7,\n  system: 'You are a cinematographer and storyboard artist. Generate detailed visual descriptions for video frame generation.\\n\\nFor each scene, create:\\n1. START FRAME: The opening shot of the scene\\n2. END FRAME: The closing shot of the scene\\n\\nOutput ONLY valid JSON with this structure:\\n{\\n  \"start_frame\": {\\n    \"composition\": \"Camera angle, framing, focal point\",\\n    \"characters\": [{\"name\": \"...\", \"pose\": \"...\", \"position\": \"...\"}],\\n    \"background\": \"Detailed background description\",\\n    \"lighting\": \"Lighting details\",\\n    \"atmosphere\": \"Mood and atmospheric elements\",\\n    \"prompt\": \"Complete image generation prompt suitable for photorealistic AI image generation\"\\n  },\\n  \"end_frame\": {\\n    \"composition\": \"Camera angle, framing, focal point\",\\n    \"characters\": [{\"name\": \"...\", \"pose\": \"...\", \"position\": \"...\"}],\\n    \"background\": \"Detailed background description\",\\n    \"lighting\": \"Lighting details\",\\n    \"atmosphere\": \"Mood and atmospheric elements\",\\n    \"prompt\": \"Complete image generation prompt suitable for photorealistic AI image generation\"\\n  }\\n}',\n  messages: [\n    {\n      role: 'user',\n      content: `Generate start and end frame descriptions for this scene:\\n\\nSCENE ${$json.scene_number}: ${$json.title}\\nDescription: ${$json.description}\\nLocation: ${$json.location}\\nTime of Day: ${$json.time_of_day}\\nMood: ${$json.mood}\\nCamera Notes: ${$json.camera_notes}\\nDuration: ${$json.duration_seconds} seconds\\n\\nCHARACTERS IN SCENE:\\n${($json.scene_characters || []).map(c => '- ' + c.name + ': ' + c.description).join('\\n')}\\n\\nVISUAL STYLE:\\n- Color Palette: ${$('Set Variables').first().json.visual_style.color_palette}\\n- Lighting: ${$('Set Variables').first().json.visual_style.lighting}\\n- Aesthetic: ${$('Set Variables').first().json.visual_style.overall_aesthetic}\\n\\nGenerate prompts suitable for photorealistic AI image generation. Respond with ONLY the JSON structure.`\n    }\n  ]\n}) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "anthropic-frame-descriptions",
+      "name": "Generate Frame Descriptions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "anthropic-api",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-frame-desc-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-frame-desc-error",
+      "name": "IF Frame Desc Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse the Anthropic response and extract frame descriptions\nconst item = $input.first().json;\nconst scene = $('Prepare Scene Data').first().json;\n\nconst responseText = item.body?.content?.[0]?.text ||\n                     item.content?.[0]?.text;\n\nif (!responseText) {\n  throw new Error('No content found in Anthropic response');\n}\n\nlet frameDescriptions;\ntry {\n  // Extract JSON from response (handle markdown code blocks)\n  const jsonMatch = responseText.match(/```json\\n?([\\s\\S]*?)\\n?```/) ||\n                    responseText.match(/\\{[\\s\\S]*\\}/);\n  const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : responseText;\n  frameDescriptions = JSON.parse(jsonStr);\n} catch (e) {\n  throw new Error(`Failed to parse frame descriptions JSON: ${e.message}`);\n}\n\n// Validate required fields\nif (!frameDescriptions.start_frame?.prompt || !frameDescriptions.end_frame?.prompt) {\n  throw new Error('Frame descriptions missing required prompt fields');\n}\n\nreturn [{\n  json: {\n    scene_number: scene.scene_number,\n    title: scene.title,\n    description: scene.description,\n    duration_seconds: scene.duration_seconds,\n    character_references: scene.character_references,\n    frame_descriptions: frameDescriptions\n  }\n}];"
+      },
+      "id": "parse-frame-descriptions",
+      "name": "Parse Frame Descriptions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.kie.ai/api/v1/jobs/createTask",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'nano-banana-2',\n  input: {\n    prompt: $json.frame_descriptions.start_frame.prompt,\n    image_input: ($json.character_references || []).map(c => c.reference_url),\n    google_search: false,\n    aspect_ratio: $('Set Variables').first().json.aspect_ratio,\n    resolution: $('Set Variables').first().json.image_resolution,\n    output_format: 'PNG'\n  }\n}) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "kie-start-frame",
+      "name": "KIE AI - Start Frame",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2010, 400],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kie-api",
+          "name": "KIE API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kie-start-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.body?.code !== undefined && $json.body.code !== 200) || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-kie-start-error",
+      "name": "IF KIE Start Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2230, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Poll KIE AI for start frame task completion\nconst item = $input.first().json;\nconst taskId = item.body?.data?.taskId || item.data?.taskId;\n\nif (!taskId) {\n  throw new Error('No taskId returned from KIE AI createTask for start frame');\n}\n\nconst sceneData = $('Parse Frame Descriptions').first().json;\nconst maxAttempts = 30;\nconst delayMs = 10000; // 10 seconds between polls\n\nfor (let attempt = 0; attempt < maxAttempts; attempt++) {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`,\n    headers: {\n      'Authorization': `Bearer ${$credentials.kieApiKey}`\n    }\n  });\n\n  const state = response.data?.state;\n\n  if (state === 'success') {\n    const resultUrls = response.data.resultJson?.result_urls || [];\n    if (resultUrls.length === 0) {\n      throw new Error('KIE AI start frame succeeded but returned no image URLs');\n    }\n    return [{\n      json: {\n        ...sceneData,\n        start_frame_url: resultUrls[0],\n        start_frame_task_id: taskId,\n        start_frame_provider: 'kie'\n      }\n    }];\n  }\n\n  if (state === 'fail') {\n    throw new Error(`KIE AI start frame failed: ${response.data.failMsg || 'Unknown error'}`);\n  }\n\n  // States: waiting, queuing, generating - keep polling\n  await new Promise(resolve => setTimeout(resolve, delayMs));\n}\n\nthrow new Error('KIE AI start frame timeout after 5 minutes');",
+        "options": {
+          "timeout": 310000
+        }
+      },
+      "id": "kie-poll-start",
+      "name": "KIE AI - Poll Start Frame",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kie-api",
+          "name": "KIE API"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kie-start-poll-error",
+              "leftValue": "={{ $json.error !== undefined || $json.start_frame_url === undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-kie-start-poll-error",
+      "name": "IF Start Poll Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2670, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.kie.ai/api/v1/jobs/createTask",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'nano-banana-2',\n  input: {\n    prompt: $('Parse Frame Descriptions').first().json.frame_descriptions.end_frame.prompt,\n    image_input: ($('Parse Frame Descriptions').first().json.character_references || []).map(c => c.reference_url),\n    google_search: false,\n    aspect_ratio: $('Set Variables').first().json.aspect_ratio,\n    resolution: $('Set Variables').first().json.image_resolution,\n    output_format: 'PNG'\n  }\n}) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "kie-end-frame",
+      "name": "KIE AI - End Frame",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2890, 600],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kie-api",
+          "name": "KIE API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kie-end-error",
+              "leftValue": "={{ $json.error !== undefined || ($json.body?.code !== undefined && $json.body.code !== 200) || ($json.statusCode !== undefined && $json.statusCode >= 400) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-kie-end-error",
+      "name": "IF KIE End Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3110, 600]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Poll KIE AI for end frame task completion\nconst item = $input.first().json;\nconst taskId = item.body?.data?.taskId || item.data?.taskId;\n\nif (!taskId) {\n  throw new Error('No taskId returned from KIE AI createTask for end frame');\n}\n\nconst sceneData = $('KIE AI - Poll Start Frame').first().json;\nconst maxAttempts = 30;\nconst delayMs = 10000; // 10 seconds between polls\n\nfor (let attempt = 0; attempt < maxAttempts; attempt++) {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${taskId}`,\n    headers: {\n      'Authorization': `Bearer ${$credentials.kieApiKey}`\n    }\n  });\n\n  const state = response.data?.state;\n\n  if (state === 'success') {\n    const resultUrls = response.data.resultJson?.result_urls || [];\n    if (resultUrls.length === 0) {\n      throw new Error('KIE AI end frame succeeded but returned no image URLs');\n    }\n    return [{\n      json: {\n        ...sceneData,\n        end_frame_url: resultUrls[0],\n        end_frame_task_id: taskId,\n        end_frame_provider: 'kie'\n      }\n    }];\n  }\n\n  if (state === 'fail') {\n    throw new Error(`KIE AI end frame failed: ${response.data.failMsg || 'Unknown error'}`);\n  }\n\n  // States: waiting, queuing, generating - keep polling\n  await new Promise(resolve => setTimeout(resolve, delayMs));\n}\n\nthrow new Error('KIE AI end frame timeout after 5 minutes');",
+        "options": {
+          "timeout": 310000
+        }
+      },
+      "id": "kie-poll-end",
+      "name": "KIE AI - Poll End Frame",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3330, 700],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kie-api",
+          "name": "KIE API"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-kie-end-poll-error",
+              "leftValue": "={{ $json.error !== undefined || $json.end_frame_url === undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-kie-end-poll-error",
+      "name": "IF End Poll Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3550, 700]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fal.run/fal-ai/flux-pro",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  prompt: $('Parse Frame Descriptions').first().json.frame_descriptions.start_frame.prompt,\n  image_size: 'landscape_16_9',\n  num_images: 1,\n  enable_safety_checker: true\n}) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "fal-start-fallback",
+      "name": "FAL AI - Start Frame Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2890, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "fal-api",
+          "name": "FAL API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Normalize FAL start frame response and continue to end frame\nconst item = $input.first().json;\nconst sceneData = $('Parse Frame Descriptions').first().json;\n\nconst imageUrl = item.body?.images?.[0]?.url ||\n                 item.images?.[0]?.url ||\n                 null;\n\nif (!imageUrl) {\n  // FAL also failed - mark start frame as failed\n  return [{\n    json: {\n      ...sceneData,\n      start_frame_url: null,\n      start_frame_provider: 'none',\n      start_frame_error: 'All providers failed for start frame'\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...sceneData,\n    start_frame_url: imageUrl,\n    start_frame_provider: 'fal'\n  }\n}];"
+      },
+      "id": "normalize-fal-start",
+      "name": "Normalize FAL Start",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3110, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fal.run/fal-ai/flux-pro",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  prompt: $('Parse Frame Descriptions').first().json.frame_descriptions.end_frame.prompt,\n  image_size: 'landscape_16_9',\n  num_images: 1,\n  enable_safety_checker: true\n}) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "fal-end-fallback",
+      "name": "FAL AI - End Frame Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3330, 300],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "fal-api",
+          "name": "FAL API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Normalize FAL end frame response\nconst item = $input.first().json;\nconst sceneData = $('Normalize FAL Start').first().json;\n\nconst imageUrl = item.body?.images?.[0]?.url ||\n                 item.images?.[0]?.url ||\n                 null;\n\nif (!imageUrl) {\n  return [{\n    json: {\n      ...sceneData,\n      end_frame_url: null,\n      end_frame_provider: 'none',\n      end_frame_error: 'All providers failed for end frame'\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...sceneData,\n    end_frame_url: imageUrl,\n    end_frame_provider: 'fal'\n  }\n}];"
+      },
+      "id": "normalize-fal-end",
+      "name": "Normalize FAL End",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3550, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle case where end frame failed on KIE but we have start frame\n// Try FAL for end frame only\nconst sceneData = $('KIE AI - Poll Start Frame').first().json;\n\nreturn [{\n  json: {\n    ...sceneData,\n    end_frame_url: null,\n    end_frame_provider: 'none',\n    end_frame_error: 'KIE AI end frame generation failed'\n  }\n}];"
+      },
+      "id": "handle-end-frame-failure",
+      "name": "Handle End Frame Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3770, 600]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle case where frame descriptions failed entirely\nconst scene = $('Prepare Scene Data').first().json;\n\nreturn [{\n  json: {\n    scene_number: scene.scene_number,\n    scene_title: scene.title,\n    scene_description: scene.description,\n    duration_seconds: scene.duration_seconds,\n    start_frame_url: null,\n    end_frame_url: null,\n    frame_descriptions: null,\n    error: 'Frame description generation failed'\n  }\n}];"
+      },
+      "id": "handle-desc-failure",
+      "name": "Handle Desc Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1790, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Upload both start and end frames to S3\n// Receives scene data with start_frame_url and end_frame_url from any path\nconst item = $input.first().json;\nconst executionId = $('Set Variables').first().json.execution_id;\nconst sceneNumber = String(item.scene_number).padStart(2, '0');\nconst s3Bucket = $env.S3_BUCKET || 'vdo-gen';\nconst s3Region = $env.S3_REGION || 'us-east-1';\n\nconst result = {\n  scene_number: item.scene_number,\n  scene_title: item.title || item.scene_title,\n  scene_description: item.description || item.scene_description,\n  duration_seconds: item.duration_seconds,\n  frame_descriptions: item.frame_descriptions,\n  start_frame_url: item.start_frame_url || null,\n  end_frame_url: item.end_frame_url || null\n};\n\n// Upload start frame if available\nif (item.start_frame_url) {\n  const startFramePath = `${executionId}/scenes/${sceneNumber}/start.png`;\n  const s3StartUrl = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/${startFramePath}`;\n\n  try {\n    const imageBuffer = await this.helpers.httpRequest({\n      method: 'GET',\n      url: item.start_frame_url,\n      encoding: 'arraybuffer'\n    });\n\n    await this.helpers.httpRequest({\n      method: 'PUT',\n      url: s3StartUrl,\n      headers: { 'Content-Type': 'image/png' },\n      body: imageBuffer,\n      encoding: 'arraybuffer'\n    });\n\n    result.start_frame_url = s3StartUrl;\n  } catch (uploadError) {\n    // Retry up to 3 times\n    let uploaded = false;\n    for (let retry = 0; retry < 3; retry++) {\n      try {\n        await new Promise(resolve => setTimeout(resolve, 2000 * (retry + 1)));\n        const imageBuffer = await this.helpers.httpRequest({\n          method: 'GET',\n          url: item.start_frame_url,\n          encoding: 'arraybuffer'\n        });\n        await this.helpers.httpRequest({\n          method: 'PUT',\n          url: s3StartUrl,\n          headers: { 'Content-Type': 'image/png' },\n          body: imageBuffer,\n          encoding: 'arraybuffer'\n        });\n        result.start_frame_url = s3StartUrl;\n        uploaded = true;\n        break;\n      } catch (e) { /* continue */ }\n    }\n    if (!uploaded) {\n      result.start_frame_url = item.start_frame_url; // Keep original URL as fallback\n    }\n  }\n}\n\n// Upload end frame if available\nif (item.end_frame_url) {\n  const endFramePath = `${executionId}/scenes/${sceneNumber}/end.png`;\n  const s3EndUrl = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/${endFramePath}`;\n\n  try {\n    const imageBuffer = await this.helpers.httpRequest({\n      method: 'GET',\n      url: item.end_frame_url,\n      encoding: 'arraybuffer'\n    });\n\n    await this.helpers.httpRequest({\n      method: 'PUT',\n      url: s3EndUrl,\n      headers: { 'Content-Type': 'image/png' },\n      body: imageBuffer,\n      encoding: 'arraybuffer'\n    });\n\n    result.end_frame_url = s3EndUrl;\n  } catch (uploadError) {\n    let uploaded = false;\n    for (let retry = 0; retry < 3; retry++) {\n      try {\n        await new Promise(resolve => setTimeout(resolve, 2000 * (retry + 1)));\n        const imageBuffer = await this.helpers.httpRequest({\n          method: 'GET',\n          url: item.end_frame_url,\n          encoding: 'arraybuffer'\n        });\n        await this.helpers.httpRequest({\n          method: 'PUT',\n          url: s3EndUrl,\n          headers: { 'Content-Type': 'image/png' },\n          body: imageBuffer,\n          encoding: 'arraybuffer'\n        });\n        result.end_frame_url = s3EndUrl;\n        uploaded = true;\n        break;\n      } catch (e) { /* continue */ }\n    }\n    if (!uploaded) {\n      result.end_frame_url = item.end_frame_url; // Keep original URL as fallback\n    }\n  }\n}\n\nreturn [{ json: result }];"
+      },
+      "id": "upload-to-s3",
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3990, 500],
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Store the processed result for loop aggregation\nconst item = $input.first().json;\n\nreturn [{\n  json: {\n    scene_number: item.scene_number,\n    scene_title: item.scene_title || item.title,\n    scene_description: item.scene_description || item.description,\n    duration_seconds: item.duration_seconds,\n    start_frame_url: item.start_frame_url || null,\n    end_frame_url: item.end_frame_url || null,\n    frame_descriptions: item.frame_descriptions || null\n  }\n}];"
+      },
+      "id": "store-result",
+      "name": "Store Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4210, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Aggregate all processed scene results into final response\nconst allItems = $input.all();\nconst executionId = $('Set Variables').first().json.execution_id;\n\nconst scenes = allItems.map(item => ({\n  id: item.json.scene_number,\n  title: item.json.scene_title,\n  description: item.json.scene_description,\n  duration_seconds: item.json.duration_seconds,\n  start_frame_url: item.json.start_frame_url,\n  end_frame_url: item.json.end_frame_url,\n  frame_descriptions: item.json.frame_descriptions\n}));\n\n// Sort by scene number\nscenes.sort((a, b) => a.id - b.id);\n\nreturn [{\n  json: {\n    execution_id: executionId,\n    scenes: scenes,\n    total_scenes: scenes.length,\n    processing_stats: {\n      successful: scenes.filter(s => s.start_frame_url && s.end_frame_url).length,\n      partial: scenes.filter(s => (s.start_frame_url && !s.end_frame_url) || (!s.start_frame_url && s.end_frame_url)).length,\n      failed: scenes.filter(s => !s.start_frame_url && !s.end_frame_url).length\n    }\n  }\n}];"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4430, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  execution_id: $json.execution_id,\n  data: {\n    scenes: $json.scenes,\n    total_scenes: $json.total_scenes,\n    processing_stats: $json.processing_stats\n  }\n}) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [4650, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Expand Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Scenes": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Scenes": {
+      "main": [
+        [
+          {
+            "node": "Prepare Scene Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Scene Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Frame Descriptions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Frame Descriptions": {
+      "main": [
+        [
+          {
+            "node": "IF Frame Desc Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Frame Desc Error": {
+      "main": [
+        [
+          {
+            "node": "Handle Desc Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Frame Descriptions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Desc Failure": {
+      "main": [
+        [
+          {
+            "node": "Store Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Frame Descriptions": {
+      "main": [
+        [
+          {
+            "node": "KIE AI - Start Frame",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIE AI - Start Frame": {
+      "main": [
+        [
+          {
+            "node": "IF KIE Start Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF KIE Start Error": {
+      "main": [
+        [
+          {
+            "node": "FAL AI - Start Frame Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "KIE AI - Poll Start Frame",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIE AI - Poll Start Frame": {
+      "main": [
+        [
+          {
+            "node": "IF Start Poll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Start Poll Error": {
+      "main": [
+        [
+          {
+            "node": "FAL AI - Start Frame Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "KIE AI - End Frame",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAL AI - Start Frame Fallback": {
+      "main": [
+        [
+          {
+            "node": "Normalize FAL Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize FAL Start": {
+      "main": [
+        [
+          {
+            "node": "FAL AI - End Frame Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAL AI - End Frame Fallback": {
+      "main": [
+        [
+          {
+            "node": "Normalize FAL End",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize FAL End": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIE AI - End Frame": {
+      "main": [
+        [
+          {
+            "node": "IF KIE End Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF KIE End Error": {
+      "main": [
+        [
+          {
+            "node": "Handle End Frame Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "KIE AI - Poll End Frame",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIE AI - Poll End Frame": {
+      "main": [
+        [
+          {
+            "node": "IF End Poll Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF End Poll Error": {
+      "main": [
+        [
+          {
+            "node": "Handle End Frame Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle End Frame Failure": {
+      "main": [
+        [
+          {
+            "node": "Upload to S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to S3": {
+      "main": [
+        [
+          {
+            "node": "Store Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Scenes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "vdo-gen",
+      "id": "vdo-gen"
+    },
+    {
+      "name": "session-3",
+      "id": "session-3"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-13T00:00:00.000Z",
+  "versionId": "1"
+}
